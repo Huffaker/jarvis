@@ -10,6 +10,13 @@
     <div id="chat">
         <div id="chatHeader">
             <h2>&#x1F916; Ollama Web Agent</h2>
+            <div id="personaRow">
+                <span id="personaLabel">Persona:</span>
+                <select id="personaSelect" title="Choose a persona (conversation memory is per-persona)">
+                    <option value="">Default</option>
+                </select>
+                <span id="personaUrlOverride" class="persona-url-override" style="display: none;"></span>
+            </div>
             <button type="button" id="clearMemoryBtn" title="Clear all conversation memory">Clear all memory</button>
         </div>
 

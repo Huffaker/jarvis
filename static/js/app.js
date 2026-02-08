@@ -7,6 +7,23 @@ function showError(msg) {
 
 var pendingImages = [];
 
+/** Persona from URL (?persona_id=xyz) overrides dropdown; used for private or shared links. */
+function getPersonaIdFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    var id = params.get("persona_id");
+    return (id && id.trim()) ? id.trim() : null;
+}
+
+/** Current persona to use for API calls: URL param if set, else dropdown value (empty = server default). */
+function currentPersonaId() {
+    var fromUrl = getPersonaIdFromUrl();
+    if (fromUrl !== null) return fromUrl;
+    var sel = document.getElementById("personaSelect");
+    if (!sel) return null;
+    var v = (sel.value || "").trim();
+    return v || null;
+}
+
 // Max width/height for attached images; larger images are scaled down before upload.
 var IMAGE_MAX_SIZE = 512;
 var IMAGE_JPEG_QUALITY = 0.82;
@@ -117,13 +134,17 @@ async function send() {
     scrollMessagesToBottom();
 
     try {
+        var payload = {
+            message: text || "",
+            images: imagesForRequest.length ? imagesForRequest : undefined
+        };
+        var pid = currentPersonaId();
+        if (pid) payload.persona_id = pid;
+
         const res = await fetch("/chat/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                message: text || "",
-                images: imagesForRequest.length ? imagesForRequest : undefined
-            })
+            body: JSON.stringify(payload)
         });
 
         if (!res.ok) {
@@ -318,10 +339,13 @@ function addMessage(sender, text, cls, attachedImages, timestamp) {
 
 async function removeFromMemory(timestamp, msgEl) {
     try {
+        var body = { timestamp: timestamp };
+        var pid = currentPersonaId();
+        if (pid) body.persona_id = pid;
         var res = await fetch("/memory/delete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ timestamp: timestamp })
+            body: JSON.stringify(body)
         });
         if (res.ok && msgEl && msgEl.parentNode) {
             msgEl.remove();
@@ -337,7 +361,14 @@ async function removeFromMemory(timestamp, msgEl) {
 async function clearAllMemory() {
     if (!confirm("Clear all conversation memory? This cannot be undone.")) return;
     try {
-        var res = await fetch("/memory/clear", { method: "POST" });
+        var body = {};
+        var pid = currentPersonaId();
+        if (pid) body.persona_id = pid;
+        var res = await fetch("/memory/clear", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
         if (res.ok) {
             document.getElementById("messages").innerHTML = "";
         } else {
@@ -350,7 +381,10 @@ async function clearAllMemory() {
 
 async function loadMemory() {
     try {
-        var res = await fetch("/memory/recent");
+        var url = "/memory/recent";
+        var pid = currentPersonaId();
+        if (pid) url += "?persona_id=" + encodeURIComponent(pid);
+        var res = await fetch(url);
         if (!res.ok) return;
         var data = await res.json();
         var entries = data.entries || [];
@@ -399,8 +433,51 @@ function addImageFromFile(file) {
     reader.readAsDataURL(file);
 }
 
+async function initPersonas() {
+    var label = document.getElementById("personaLabel");
+    var select = document.getElementById("personaSelect");
+    var urlOverride = document.getElementById("personaUrlOverride");
+    var fromUrl = getPersonaIdFromUrl();
+
+    if (fromUrl !== null) {
+        select.style.display = "none";
+        label.textContent = "Persona: ";
+        urlOverride.textContent = fromUrl + " (from link)";
+        urlOverride.style.display = "inline";
+        return;
+    }
+
+    try {
+        var res = await fetch("/personas?public=true");
+        if (!res.ok) return;
+        var data = await res.json();
+        var personas = data.personas || [];
+        var defaultId = data.default || null;
+        select.innerHTML = "";
+        var opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = defaultId ? "Default (" + defaultId + ")" : "Default";
+        select.appendChild(opt);
+        personas.forEach(function (p) {
+            var o = document.createElement("option");
+            o.value = p.id;
+            o.textContent = p.name || p.id;
+            select.appendChild(o);
+        });
+    } catch (e) {
+        console.warn("Could not load personas", e);
+    }
+
+    select.addEventListener("change", function () {
+        document.getElementById("messages").innerHTML = "";
+        loadMemory().then(function () { scrollMessagesToBottom(); });
+    });
+}
+
 document.addEventListener("DOMContentLoaded", function () {
-    loadMemory().then(function () { scrollMessagesToBottom(); });
+    initPersonas().then(function () {
+        return loadMemory();
+    }).then(function () { scrollMessagesToBottom(); });
 
     document.getElementById("clearMemoryBtn").addEventListener("click", clearAllMemory);
 
