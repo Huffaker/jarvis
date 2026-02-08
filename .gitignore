@@ -1,0 +1,32 @@
+# Persona data and memory (use personas_default as template; .personas is created on first run)
+.personas/
+memory.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Env / secrets (Flask and others load .env)
+.env
+.env.local
+.flaskenv
+
+# Build / install
+*.egg-info/
+dist/
+build/
+
+# Testing / tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ollama Web Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div id="chat">
+        <div id="chatHeader">
+            <h2>&#x1F916; Ollama Web Agent</h2>
+            <button type="button" id="clearMemoryBtn" title="Clear all conversation memory">Clear all memory</button>
+        </div>
+
+        <div id="messages"></div>
+
+        <div id="compose">
+            <div id="attachments"></div>
+            <div id="inputRow">
+                <input id="input" placeholder="Ask something... (attach images to discuss them)" autofocus />
+                <input type="file" id="fileInput" accept="image/*" multiple hidden />
+                <button type="button" id="attachBtn" title="Attach image">&#x1F4F7;</button>
+                <button type="button" id="sendBtn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

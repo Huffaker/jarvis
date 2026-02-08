@@ -1,0 +1,16 @@
+python -m pip install -r requirements.txt
+
+python agent_cli.py
+python app.py
+
+Keeping the app available continuously (Windows)
+  When the app is running, it asks Windows to keep the system awake so the
+  server stays available. You do not need to change global sleep settings;
+  when you stop the app, normal sleep behavior returns.
+
+  To run only when plugged in (stops when unplugged):
+    python run_when_plugged.py
+
+  To also keep running with the lid closed when plugged in, set one option:
+    Power Options -> Choose what closing the lid does ->
+    "When plugged in" -> Do nothing.
