@@ -92,8 +92,8 @@ def get_persona_config(persona_id: str) -> dict | None:
 
 
 def get_default_persona_id() -> str:
-    """Return the first available persona id, or 'assistant' if none found."""
-    personas = list_personas(public_only=False)
+    """Return the first public persona id, or 'assistant' if none found. Private personas are never default."""
+    personas = list_personas(public_only=True)
     if personas:
         return personas[0]["id"]
     return "assistant"

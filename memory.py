@@ -117,7 +117,11 @@ def get_recent_memory(memory_file: str | None = None):
 
 
 def format_memory_entry(entry: dict, include_image_context: bool = True) -> str:
-    """Format a single memory entry for inclusion in the prompt (includes image context if present and include_image_context is True)."""
+    """
+    Format a single memory entry for inclusion in the prompt.
+    Includes image context if present and include_image_context is True.
+    Intentionally omits 'sources' (web URLs): stored for UI display only, not sent to the LLM.
+    """
     line = f"{entry['role']}: {entry['content']}"
     ctx = entry.get("image_context") or ""
     if ctx and include_image_context:

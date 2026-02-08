@@ -520,7 +520,44 @@ async function initPersonas() {
     });
 }
 
+var OPTIONS_STORAGE_KEY_THINKING = "ollama-agent-show-thinking";
+var OPTIONS_STORAGE_KEY_SOURCES = "ollama-agent-show-web-sources";
+
+function applyOptionsFromStorage() {
+    var showThinking = localStorage.getItem(OPTIONS_STORAGE_KEY_THINKING);
+    var showSources = localStorage.getItem(OPTIONS_STORAGE_KEY_SOURCES);
+    var optThinking = document.getElementById("optionShowThinking");
+    var optSources = document.getElementById("optionShowSources");
+    if (optThinking) {
+        optThinking.checked = showThinking !== "false";
+        document.body.classList.toggle("options-hide-thinking", !optThinking.checked);
+    }
+    if (optSources) {
+        optSources.checked = showSources !== "false";
+        document.body.classList.toggle("options-hide-sources", !optSources.checked);
+    }
+}
+
+function initOptions() {
+    applyOptionsFromStorage();
+    var optThinking = document.getElementById("optionShowThinking");
+    var optSources = document.getElementById("optionShowSources");
+    if (optThinking) {
+        optThinking.addEventListener("change", function () {
+            localStorage.setItem(OPTIONS_STORAGE_KEY_THINKING, optThinking.checked ? "true" : "false");
+            document.body.classList.toggle("options-hide-thinking", !optThinking.checked);
+        });
+    }
+    if (optSources) {
+        optSources.addEventListener("change", function () {
+            localStorage.setItem(OPTIONS_STORAGE_KEY_SOURCES, optSources.checked ? "true" : "false");
+            document.body.classList.toggle("options-hide-sources", !optSources.checked);
+        });
+    }
+}
+
 document.addEventListener("DOMContentLoaded", function () {
+    initOptions();
     initPersonas().then(function () {
         return loadMemory();
     }).then(function () { scrollMessagesToBottom(); });
