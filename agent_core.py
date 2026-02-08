@@ -185,17 +185,19 @@ def _build_prompt(memory_context, question, web_context=None, extra_context=None
     return "\n".join(parts)
 
 
-def _add_turn_to_memory(question, response_text, image_context=None, memory_file=None):
+def _add_turn_to_memory(question, response_text, image_context=None, memory_file=None, sources=None):
     """Persist user message and assistant response to short-term memory. Returns (user_ts, assistant_ts)."""
     user_ts = add_to_memory("user", question, image_context=image_context, memory_file=memory_file)
-    assistant_ts = add_to_memory("assistant", response_text, memory_file=memory_file)
+    assistant_ts = add_to_memory(
+        "assistant", response_text, memory_file=memory_file, sources=sources or []
+    )
     return (user_ts, assistant_ts)
 
 
 def _run_ollama_and_save(prompt, question, images, image_context, sources, memory_file=None, model=None):
     """Call Ollama (non-streaming), save turn to memory, return (response, sources)."""
     response = ask_ollama(prompt, images=images if images else None, model=model)
-    _add_turn_to_memory(question, response, image_context, memory_file=memory_file)
+    _add_turn_to_memory(question, response, image_context, memory_file=memory_file, sources=sources)
     return (response, sources)  # timestamps not needed for non-streaming
 
 
@@ -211,11 +213,11 @@ def _stream_ollama_and_save(prompt, question, images, image_context, sources, me
                 yield {"token": event["token"]}
     except Exception as e:
         err_msg = OLLAMA_FAIL_MSG.format(e)
-        user_ts, assistant_ts = _add_turn_to_memory(question, err_msg, image_context, memory_file=memory_file)
+        user_ts, assistant_ts = _add_turn_to_memory(question, err_msg, image_context, memory_file=memory_file, sources=[])
         yield {"done": True, "sources": sources, "error": str(e), "final": err_msg, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
         return
     response = "".join(full).strip()
-    user_ts, assistant_ts = _add_turn_to_memory(question, response, image_context, memory_file=memory_file)
+    user_ts, assistant_ts = _add_turn_to_memory(question, response, image_context, memory_file=memory_file, sources=sources)
     yield {"done": True, "sources": sources, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
 
 
@@ -273,7 +275,7 @@ def answer(question, extra_context=None, images=None, persona_id=None):
         question, memory_context, extra_context, log_search=True, use_web_search=use_web_search, system_persona=system_persona
     )
     if fail:
-        _add_turn_to_memory(question, fail, image_context, memory_file=memory_file)
+        _add_turn_to_memory(question, fail, image_context, memory_file=memory_file, sources=[])
         return (fail, [])
     main_model = vl_model if has_images else model
     return _run_ollama_and_save(prompt, question, images, image_context, sources, memory_file=memory_file, model=main_model)
@@ -301,7 +303,7 @@ def answer_stream(question, extra_context=None, images=None, image_context=None,
         question, memory_context, extra_context, use_web_search=use_web_search, system_persona=system_persona
     )
     if fail:
-        user_ts, assistant_ts = _add_turn_to_memory(question, fail, image_context, memory_file=memory_file)
+        user_ts, assistant_ts = _add_turn_to_memory(question, fail, image_context, memory_file=memory_file, sources=[])
         yield {"done": True, "sources": [], "final": fail, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
         return
     main_model = vl_model if has_images else model

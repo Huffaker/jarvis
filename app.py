@@ -64,6 +64,15 @@ def personas_list():
     return jsonify({"personas": personas, "default": get_default_persona_id()})
 
 
+@app.route("/personas/<persona_id>", methods=["GET"])
+def persona_get(persona_id: str):
+    """Return a single persona's display info (id, name). Works for public or private personas."""
+    cfg = get_persona_config(persona_id)
+    if not cfg:
+        return jsonify({"error": "persona not found"}), 404
+    return jsonify({"id": persona_id, "name": cfg.get("name", persona_id)})
+
+
 @app.route("/memory/recent", methods=["GET"])
 def memory_recent():
     """Return recent memory entries (for loading chat history with timestamps). Query: persona_id (optional)."""
@@ -116,6 +125,7 @@ def _normalize_images(images):
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    
     data = request.json or {}
     message = data.get("message", "").strip()
     images = _normalize_images(data.get("images") or [])

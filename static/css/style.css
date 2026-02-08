@@ -2,6 +2,8 @@ html, body {
     height: 100%;
     margin: 0;
     padding: 0;
+    overflow-x: hidden;
+    max-width: 100vw;
 }
 body {
     font-family: Arial, sans-serif;
@@ -12,10 +14,17 @@ body {
     display: flex;
     flex-direction: column;
     height: 100%;
+    width: 100%;
+    min-width: 0;
     max-width: 800px;
     margin: 0 auto;
     padding: 0 20px;
     box-sizing: border-box;
+}
+@media (max-width: 480px) {
+    #chat {
+        padding: 0 12px;
+    }
 }
 #chatHeader {
     flex-shrink: 0;
@@ -25,6 +34,13 @@ body {
     flex-wrap: wrap;
     gap: 10px;
     padding: 16px 0 12px;
+    min-width: 0;
+}
+#chatHeader h2 {
+    margin: 0;
+    font-size: clamp(1rem, 4.5vw, 1.35rem);
+    overflow-wrap: break-word;
+    min-width: 0;
 }
 #personaRow {
     display: flex;
@@ -38,7 +54,11 @@ body {
     color: #e0e0e0;
     border: 1px solid #444;
     border-radius: 4px;
-    min-width: 120px;
+    min-width: 0;
+    max-width: 100%;
+}
+@media (min-width: 360px) {
+    #personaSelect { min-width: 120px; }
 }
 .persona-url-override {
     font-size: 12px;
@@ -47,6 +67,8 @@ body {
 #messages {
     flex: 1;
     min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 4px 0 32px 0;
@@ -65,6 +87,9 @@ body {
     margin-bottom: 16px;
     white-space: pre-wrap;
     position: relative;
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
 }
 .message-remove {
     font-size: 11px;
@@ -97,6 +122,9 @@ body {
 }
 .message-body {
     white-space: normal;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    min-width: 0;
 }
 .message-body p {
     margin: 0.5em 0;
@@ -127,6 +155,8 @@ body {
     border-radius: 4px;
     overflow-x: auto;
     margin: 0.5em 0;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
 }
 .message-body pre code {
     background: none;
@@ -134,24 +164,14 @@ body {
 }
 .message-body a {
     color: #80cbc4;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 .message-body blockquote {
     border-left: 3px solid #555;
     margin: 0.5em 0;
     padding-left: 1em;
     color: #b0b0b0;
-}
-.sources {
-    font-size: 0.85em;
-    color: #bbbbbb;
-    margin-top: 6px;
-}
-.sources ul {
-    margin: 0.35em 0;
-    padding-left: 1.5em;
-}
-.sources a {
-    color: #80cbc4;
 }
 .error {
     color: #ff8a80;
@@ -163,12 +183,14 @@ body {
 #compose {
     flex-shrink: 0;
     padding: 12px 0 16px;
+    min-width: 0;
 }
 #inputRow {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
+    min-width: 0;
 }
 #attachments {
     display: flex;
@@ -314,8 +336,81 @@ input:disabled {
 }
 .message-response {
     white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    min-width: 0;
 }
 @keyframes thinking-pulse {
     0%, 100% { opacity: 0.6; }
     50% { opacity: 1; }
+}
+
+/* Web sources: part of the message, collapsible (default expanded). Override .message white-space so list spacing is normal. */
+.message-sources {
+    margin-top: 0.35em;
+    white-space: normal;
+}
+.message-sources.collapsed .sources-content {
+    display: none;
+}
+.sources-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 2px 0;
+    margin: 0;
+    font-size: 0.9em;
+    color: #9e9e9e;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+}
+.sources-toggle:hover {
+    color: #b0b0b0;
+}
+.sources-arrow {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-left: 5px solid currentColor;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform 0.15s ease;
+}
+.message-sources:not(.collapsed) .sources-arrow {
+    transform: rotate(90deg);
+}
+.message-sources .sources-content {
+    margin-top: 2px;
+    font-size: 0.85em;
+    color: #bbbbbb;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    min-width: 0;
+    line-height: 1.35;
+    padding: 0;
+}
+.message-sources .sources-content ul {
+    margin: 0.15em 0;
+    padding-left: 1.25em;
+}
+/* line-height keeps wrapped URLs from overlapping within one entry */
+.message-sources .sources-content li {
+    margin-bottom: 0;
+    margin-top: 0;
+}
+/* gap between entries only (does not affect lines inside one entry) */
+.message-sources .sources-content li + li {
+    margin-top: 0.05em;
+}
+.message-sources .sources-content p {
+    margin: 0.15em 0;
+}
+.message-sources .sources-content p:first-child {
+    margin-top: 0;
+}
+.message-sources .sources-content a {
+    color: #80cbc4;
 }

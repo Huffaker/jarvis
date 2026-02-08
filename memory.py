@@ -10,6 +10,8 @@ _memory_lock = threading.Lock()
 MAX_MEMORY_CHARS = 50_000
 MAX_ITEM_CHARS = 1000
 MAX_IMAGE_CONTEXT_CHARS = 2000
+MAX_SOURCES = 20
+MAX_SOURCE_URL_CHARS = 500
 
 
 def _cap_content(content: str, max_len: int = MAX_ITEM_CHARS) -> str:
@@ -51,13 +53,20 @@ def save_memory(data: dict, memory_file: str | None = None) -> None:
         json.dump({"entries": entries}, f, indent=2)
 
 
-def add_to_memory(role: str, content: str, image_context: str | None = None, memory_file: str | None = None) -> str:
+def add_to_memory(
+    role: str,
+    content: str,
+    image_context: str | None = None,
+    memory_file: str | None = None,
+    sources: list[str] | None = None,
+) -> str:
     """
     Append a message to short-term memory.
     role: "user" or "assistant"
     content: text of the message (capped to MAX_ITEM_CHARS).
     image_context: optional text summary of user-attached image(s) from the vision model (capped).
     memory_file: path to persona memory JSON; if None, uses global MEMORY_FILE.
+    sources: optional list of URL strings (for assistant messages with web search); capped by MAX_SOURCES and MAX_SOURCE_URL_CHARS.
     Returns the timestamp of the created entry (for UI remove-from-memory).
     """
     with _memory_lock:
@@ -71,6 +80,10 @@ def add_to_memory(role: str, content: str, image_context: str | None = None, mem
         if image_context:
             normalized = (image_context or "").replace("\n", " ").replace("\r", " ").strip()
             entry["image_context"] = _cap_content(normalized, MAX_IMAGE_CONTEXT_CHARS)
+        if sources and role == "assistant":
+            urls = [str(u).strip()[:MAX_SOURCE_URL_CHARS] for u in sources if u][:MAX_SOURCES]
+            if urls:
+                entry["sources"] = urls
         data["entries"].append(entry)
         save_memory(data, memory_file=memory_file)
     return ts
@@ -97,7 +110,7 @@ def clear_memory(memory_file: str | None = None) -> None:
 
 
 def get_recent_memory(memory_file: str | None = None):
-    """Return all memory entries (already size-limited when saved). Each may have role, content, image_context."""
+    """Return all memory entries (already size-limited when saved). Each may have role, content, image_context, sources."""
     with _memory_lock:
         data = load_memory(memory_file=memory_file)
         return list(data["entries"])  # return a copy so callers don't mutate under lock

@@ -24,6 +24,27 @@ function currentPersonaId() {
     return v || null;
 }
 
+var personaNameCache = {};
+var defaultPersonaId = null;
+
+/** Resolve current persona's display name (for message labels). Caches result. */
+function getCurrentPersonaName() {
+    var pid = currentPersonaId();
+    if (pid === null) pid = defaultPersonaId;
+    if (!pid) return Promise.resolve("Assistant");
+    if (personaNameCache[pid]) return Promise.resolve(personaNameCache[pid]);
+    return fetch("/personas/" + encodeURIComponent(pid))
+        .then(function (res) {
+            if (!res.ok) return pid;
+            return res.json().then(function (data) {
+                var name = data.name || pid;
+                personaNameCache[pid] = name;
+                return name;
+            });
+        })
+        .catch(function () { return pid; });
+}
+
 // Max width/height for attached images; larger images are scaled down before upload.
 var IMAGE_MAX_SIZE = 512;
 var IMAGE_JPEG_QUALITY = 0.82;
@@ -123,6 +144,7 @@ async function send() {
     var text = input.value.trim();
     if (!text && pendingImages.length === 0) return;
 
+    var assistantLabel = await getCurrentPersonaName();
     var imagesForRequest = pendingImages.map(dataUrlToBase64);
     var userMsgEl = addMessage("You", text || "(image)", "user", pendingImages.slice());
     input.value = "";
@@ -163,7 +185,7 @@ async function send() {
         var msgDiv = document.createElement("div");
         msgDiv.className = "message assistant";
         var label = document.createElement("strong");
-        label.textContent = "Assistant: ";
+        label.textContent = assistantLabel + ": ";
         msgDiv.appendChild(label);
         var bodyDiv = document.createElement("div");
         bodyDiv.className = "message-body";
@@ -275,7 +297,7 @@ async function send() {
             responseDiv.innerHTML = marked.parse(fullText);
         }
         if (sources && sources.length) {
-            addSources(sources);
+            addSourcesToMessage(sources, msgDiv);
         }
     } catch (err) {
         showError("Could not reach the server. Check that it is running and try again.");
@@ -388,30 +410,54 @@ async function loadMemory() {
         if (!res.ok) return;
         var data = await res.json();
         var entries = data.entries || [];
+        var assistantLabel = await getCurrentPersonaName();
         entries.forEach(function (entry) {
-            var sender = entry.role === "user" ? "You" : "Assistant";
+            var sender = entry.role === "user" ? "You" : assistantLabel;
             var cls = entry.role === "user" ? "user" : "assistant";
             var text = entry.content || "";
             if (entry.image_context) text += "\n[Image: " + entry.image_context + "]";
-            addMessage(sender, text, cls, null, entry.timestamp);
+            var msgEl = addMessage(sender, text, cls, null, entry.timestamp);
+            if (cls === "assistant" && entry.sources && entry.sources.length) {
+                addSourcesToMessage(entry.sources, msgEl);
+            }
         });
     } catch (e) {
         console.warn("Could not load memory", e);
     }
 }
 
-function addSources(urls) {
-    const div = document.createElement("div");
-    div.className = "sources";
-    const markdown = "**Web sources:**\n\n" + urls.map(function (url) {
+/**
+ * Add a collapsible "Web sources" block inside an assistant message. Default expanded.
+ * parentEl: the assistant message div (msgDiv).
+ */
+function addSourcesToMessage(urls, parentEl) {
+    if (!urls || urls.length === 0 || !parentEl) return;
+    var section = document.createElement("div");
+    section.className = "message-sources";
+    var header = document.createElement("button");
+    header.type = "button";
+    header.className = "sources-toggle";
+    header.setAttribute("aria-expanded", "true");
+    header.innerHTML = "<span class=\"sources-arrow\"></span> Web sources (" + urls.length + ")";
+    var content = document.createElement("div");
+    content.className = "sources-content";
+    var markdown = "**Web sources:**\n\n" + urls.map(function (url) {
         return "- [" + url + "](" + url + ")";
     }).join("\n");
     if (typeof marked !== "undefined") {
-        div.innerHTML = marked.parse(markdown);
+        content.innerHTML = marked.parse(markdown);
     } else {
-        div.textContent = "Web sources:\n" + urls.join("\n");
+        content.textContent = "Web sources:\n" + urls.join("\n");
     }
-    document.getElementById("messages").appendChild(div);
+    content.classList.add("sources");
+    header.addEventListener("click", function () {
+        var collapsed = section.classList.toggle("collapsed");
+        header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+    section.appendChild(header);
+    section.appendChild(content);
+    parentEl.appendChild(section);
+    scrollMessagesToBottom();
 }
 
 function addImageFromFile(file) {
@@ -452,11 +498,11 @@ async function initPersonas() {
         if (!res.ok) return;
         var data = await res.json();
         var personas = data.personas || [];
-        var defaultId = data.default || null;
+        defaultPersonaId = data.default || null;
         select.innerHTML = "";
         var opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = defaultId ? "Default (" + defaultId + ")" : "Default";
+        opt.textContent = defaultPersonaId ? "Default (" + defaultPersonaId + ")" : "Default";
         select.appendChild(opt);
         personas.forEach(function (p) {
             var o = document.createElement("option");
