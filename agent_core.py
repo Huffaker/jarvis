@@ -1,39 +1,28 @@
+import base64
 import json
+import os
 import requests
 from ddgs import DDGS
-import datetime
+from datetime import datetime, timezone
 
 from image_context import prepare_images_for_stream, resize_image_for_llm, image_context_for_images
-from memory import add_to_memory, get_recent_memory, format_memory_entry
-from personas import get_persona_config, get_default_persona_id
+from memory import add_to_memory, get_recent_memory
+from app_types.memory import MemoryEntry
+from personas import (
+    DECISION_MODEL,
+    MODEL,
+    VL_MODEL,
+    SYSTEM_PERSONA,
+    get_persona_config,
+    get_default_persona_id,
+    persona_from_id,
+    persona_settings,
+)
+from comfyui import generate_image as comfyui_generate_image
+from app_types.persona import Persona
+from app_types.prompt import Prompt
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-# Defaults when no persona or persona has no overrides
-DECISION_MODEL = "qwen3:0.6b"
-MODEL = "qwen3:4b"
-VL_MODEL = "qwen3-vl:4b"
-
-SYSTEM_PERSONA = """
-You are a helpful AI assistant.
-You remain accurate, concise, and calm.
-"""
-
-def _persona_settings(persona_id):
-    """
-    Resolve persona_id to (system_persona, decision_model, model, vl_model, memory_path).
-    memory_path is None to use global memory. persona_id None uses default persona.
-    """
-    pid = persona_id or get_default_persona_id()
-    cfg = get_persona_config(pid)
-    if not cfg:
-        return (SYSTEM_PERSONA, DECISION_MODEL, MODEL, VL_MODEL, None)
-    return (
-        cfg.get("system_persona") or SYSTEM_PERSONA,
-        cfg.get("decision_model") or DECISION_MODEL,
-        cfg.get("model") or MODEL,
-        cfg.get("vl_model") or VL_MODEL,
-        cfg.get("memory_path"),
-    )
 
 
 # ---------------- Ollama ----------------
@@ -126,6 +115,22 @@ YES or NO
     return ask_ollama(prompt, model=decision_model or DECISION_MODEL).upper().startswith("YES")
 
 
+def needs_image_generation(question, decision_model=None):
+    """Return True if the question is asking the assistant to generate or create an image."""
+    prompt = f"""
+You are a classifier.
+
+Question:
+{question}
+
+Answer YES if the user is asking you to generate, create, draw, or make an image (e.g. "draw a cat", "generate an image of", "create a picture of", "make me an image").
+Answer NO for all other requests (questions, chat, edit an existing image, search, etc.).
+
+Respond with ONLY one word: YES or NO
+"""
+    return ask_ollama(prompt, model=decision_model or DECISION_MODEL).upper().startswith("YES")
+
+
 # ---------------- Search ----------------
 
 def web_search(query: str) -> tuple[str | None, list[str]]:
@@ -166,32 +171,65 @@ OLLAMA_FAIL_MSG = (
     "The model request failed ({0}). Try a smaller or different image, or check that Ollama is running."
 )
 
+IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for Stable Diffusion / ComfyUI.
+Use the conversation memory for context. Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
 
-def _build_prompt(memory_context, question, web_context=None, extra_context=None, system_persona=None):
-    """Build prompt with optional conversation memory, web context, and extra context."""
-    parts = []
-    parts.append(system_persona or SYSTEM_PERSONA)
+
+def _build_image_prompt_request(memory_context: str, question: str, system_persona=None) -> str:
+    """Build a prompt that asks the LLM to output only an image-generation prompt."""
+    parts = [IMAGE_GEN_SYSTEM]
     if memory_context:
         parts.append(f"Conversation memory:\n{memory_context}\n")
-    if extra_context:
-        parts.append(f"Additional context:\n{extra_context}\n")
-    if web_context:
-        parts.append(
-            "Use the following web information to answer the question. "
-            "Base your answer on this information unless the prompt includes an image, then also use the image context.\n\n"
-            f"Web information:\n{web_context}\n"
-        )
-    parts.append(f"Question:\n{question}")
+    parts.append(f"User request:\n{question}")
+    parts.append("\nOutput only the image prompt (no other text):")
     return "\n".join(parts)
 
 
-def _add_turn_to_memory(question, response_text, image_context=None, memory_file=None, sources=None):
-    """Persist user message and assistant response to short-term memory. Returns (user_ts, assistant_ts)."""
-    user_ts = add_to_memory("user", question, image_context=image_context, memory_file=memory_file)
-    assistant_ts = add_to_memory(
-        "assistant", response_text, memory_file=memory_file, sources=sources or []
-    )
-    return (user_ts, assistant_ts)
+def _run_image_generation_with_prompt(
+    image_prompt: str,
+    question: str,
+    image_context: str | None,
+    persona: Persona,
+) -> tuple[str, str | None, dict]:
+    """
+    Run ComfyUI with the given image prompt; build response text and save image to static/generated.
+    Does NOT add to memory. Returns (response_text, generated_image_path, image_result).
+    """
+    cfg = get_persona_config(persona.id) if persona.id else None
+    comfyui_config = (cfg or {}).get("comfyui")
+    image_result = comfyui_generate_image(image_prompt, comfyui_config=comfyui_config)
+    if image_result.get("status") == "placeholder":
+        response_text = (
+            "*ComfyUI integration is not yet connected. Replace `comfyui.generate_image()` to call your ComfyUI API.*"
+        )
+        generated_image_path = None
+    elif image_result.get("status") == "ok" and image_result.get("image_base64"):
+        response_text = f"[Image generated.]"
+        generated_image_path = _save_generated_image(image_result["image_base64"])
+    else:
+        err = image_result.get("error") or image_result.get("message") or "Unknown error"
+        response_text = f"Generation failed: {err}"
+        generated_image_path = None
+    return (response_text, generated_image_path, image_result)
+
+def _save_generated_image(image_base64: str) -> str | None:
+    """Save base64 PNG to static/generated/<timestamp>.png. Return URL path e.g. /static/generated/xxx.png or None on failure."""
+    try:
+        root = os.path.dirname(os.path.abspath(__file__))
+        gen_dir = os.path.join(root, "static", "generated")
+        os.makedirs(gen_dir, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y%m%d_%H%M%S") + "_" + str(now.microsecond)
+        filename = f"{ts}.png"
+        path = os.path.join(gen_dir, filename)
+        data = base64.b64decode(image_base64)
+        with open(path, "wb") as f:
+            f.write(data)
+        return f"/static/generated/{filename}"
+    except Exception as e:
+        import sys
+        print(f"Failed to save generated image to disk: {e}", file=sys.stderr)
+        return None
 
 
 def _run_ollama_and_save(prompt, question, images, image_context, sources, memory_file=None, model=None):
@@ -201,11 +239,131 @@ def _run_ollama_and_save(prompt, question, images, image_context, sources, memor
     return (response, sources)  # timestamps not needed for non-streaming
 
 
-def _stream_ollama_and_save(prompt, question, images, image_context, sources, memory_file=None, model=None):
-    """Generator: stream Ollama, save turn to memory, yield thinking/token/done events. Yields error event on failure."""
+def web_search_stream(persona: Persona, question: str, prompt: Prompt, memory: MemoryEntry):
+    """
+    Transform: optionally run web search and mutate prompt with web_context and sources.
+    Yields {"searching": True} when searching. Always returns the prompt (possibly updated).
+    use_web_search: if provided (bool), use it instead of calling needs_web_search (avoids duplicate decision call).
+    """
+    if not persona.can_web_search:
+        return prompt, memory
+    use_web_search = needs_web_search(question, decision_model=persona.decision_model)
+    if not use_web_search:
+        return prompt, memory
+    print("\n🔎 Searching the web...\n")
+    yield {"searching": True}
+    context, sources = web_search(question)
+    if not context:
+        return prompt, memory
+    memory.sources = sources
+    memory.web_context = context
+    prompt.web_context = context
+    prompt.sources = sources
+    return prompt, memory
+
+
+def image_generation_stream(
+    persona: Persona,
+    question: str,
+    prompt: Prompt,
+    assistant_memory: MemoryEntry,
+    image_context: str | None,
+    user_ts: str,
+    memory_file: str | None,
+):
+    """
+    Transform: if the question is an image-generation request, run LLM→ComfyUI, fill assistant_memory, yield events, and yield {"done": True, ...}.
+    Otherwise return (prompt, assistant_memory) unchanged so the caller continues to the main LLM.
+    """
+    if not persona.decisions.get("image_generation", True):
+        return prompt, assistant_memory
+    if not needs_image_generation(question, decision_model=persona.decision_model):
+        return prompt, assistant_memory
+    memory_context = prompt.memory_entries.build_prompt(include_image_context=True, include_generated_image_prompt=True) if prompt.memory_entries else ""
+    prompt_request = _build_image_prompt_request(memory_context, question, persona.system_persona)
+    image_prompt_parts = []
+    try:
+        for event in ask_ollama_stream(prompt_request, model=persona.model):
+            if "thinking" in event:
+                yield {"thinking": event["thinking"]}
+            elif "token" in event:
+                image_prompt_parts.append(event["token"])
+                yield {"thinking": event["token"]}
+    except Exception as e:
+        err_msg = OLLAMA_FAIL_MSG.format(e)
+        assistant_memory.content = err_msg
+        assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+        yield {"done": True, "sources": [], "final": err_msg, "error": str(e), "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
+        return prompt, assistant_memory
+    image_prompt = "".join(image_prompt_parts).strip()
+    yield {"thinking": "\n\nGenerating image...\n"}
+    response_text, generated_image_path, image_result = _run_image_generation_with_prompt(
+        image_prompt, question, image_context, persona
+    )
+    assistant_memory.content = response_text
+    assistant_memory.generated_image_prompt = image_prompt
+    assistant_memory.generated_image_path = generated_image_path
+    assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+    yield {
+        "done": True,
+        "sources": [],
+        "final": response_text,
+        "image_prompt": image_prompt,
+        "image_result": image_result,
+        "user_timestamp": user_ts,
+        "assistant_timestamp": assistant_ts,
+    }
+    return prompt, assistant_memory
+
+
+def answer(question, extra_context=None, images=None, image_context=None, persona_id=None):
+    """
+    Answer a question using memory, optional extra context, web search when needed, or image generation when requested.
+    extra_context: optional string (e.g. user preferences, session facts) included in the prompt.
+    images: optional list of base64-encoded image strings; each is summarized as text and stored in memory.
+    persona_id: optional persona id; uses that persona's config and memory. Defaults to first available persona.
+    Returns (response_text, sources) where sources is a list of strings (e.g. URLs) when web search was used.
+    Implemented by consuming answer_stream and returning the completed response.
+    """
+    parts = []
+    sources = []
+    for event in answer_stream(question, extra_context=extra_context, images=images, image_context=image_context, persona_id=persona_id):
+        if "token" in event:
+            parts.append(event["token"])
+        if event.get("done"):
+            sources = event.get("sources", [])
+            return (event.get("final") or "".join(parts).strip(), sources)
+    return ("".join(parts).strip(), sources)
+
+
+def answer_stream(question, extra_context=None, images=None, image_context=None, persona_id=None):
+    """
+    Stream an answer: yields {"searching": True}, {"thinking": "..."}, {"token": "..."}, then {"done": True, "sources": [...], ...}.
+    For image gen, yields thinking events then {"done": True, "final": ..., "image_result": ...}.
+    """
+    persona = persona_from_id(persona_id)
+    memory_file = persona.memory_path
+    user_memory = MemoryEntry(timestamp="", role="user", content=question, image_context=image_context)
+    user_ts = add_to_memory(user_memory, memory_file=memory_file)
+    memory_entries = get_recent_memory(memory_file=memory_file)
+    prompt = Prompt(question=question, memory_entries=memory_entries, extra_context=extra_context, system_persona=persona.system_persona)
+    assistant_memory = MemoryEntry(timestamp="", role="assistant", persona_name=persona.name, content="", web_context=None, sources=[])
+    prompt, assistant_memory = yield from web_search_stream(persona, question, prompt, assistant_memory)
+
+    gen = image_generation_stream(persona, question, prompt, assistant_memory, image_context, user_ts, memory_file)
+    try:
+        while True:
+            event = next(gen)
+            yield event
+            if event.get("done"):
+                return
+    except StopIteration as e:
+        prompt, assistant_memory = e.value
+
+    main_model = persona.vl_model if images else persona.model
     full = []
     try:
-        for event in ask_ollama_stream(prompt, images=images if images else None, model=model):
+        for event in ask_ollama_stream(prompt.build(), images=images if images else None, model=main_model):
             if "thinking" in event:
                 yield {"thinking": event["thinking"]}
             elif "token" in event:
@@ -213,98 +371,12 @@ def _stream_ollama_and_save(prompt, question, images, image_context, sources, me
                 yield {"token": event["token"]}
     except Exception as e:
         err_msg = OLLAMA_FAIL_MSG.format(e)
-        user_ts, assistant_ts = _add_turn_to_memory(question, err_msg, image_context, memory_file=memory_file, sources=[])
-        yield {"done": True, "sources": sources, "error": str(e), "final": err_msg, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
+        assistant_memory.content = err_msg
+        assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+        yield {"done": True, "sources": [], "final": err_msg, "error": str(e), "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
         return
     response = "".join(full).strip()
-    user_ts, assistant_ts = _add_turn_to_memory(question, response, image_context, memory_file=memory_file, sources=sources)
-    yield {"done": True, "sources": sources, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
-
-
-def _prepare_answer(question, images=None, image_context=None, include_prior_image_context=None, memory_file=None):
-    """Return (images, image_context, memory_context). Pass include_prior_image_context to avoid calling needs_prior_image_context again."""
-    images = images or []
-    if image_context is None and images:
-        images = [resize_image_for_llm(img) for img in images]
-        image_context = image_context_for_images(images)
-    elif images:
-        images = [resize_image_for_llm(img) for img in images]
-    if include_prior_image_context is None:
-        include_prior_image_context = not images or needs_prior_image_context(question)
-    recent = get_recent_memory(memory_file=memory_file)
-    memory_context = "\n".join(format_memory_entry(m, include_prior_image_context) for m in recent)
-    return (images, image_context, memory_context)
-
-
-def _get_prompt_and_sources(question, memory_context, extra_context, log_search=False, use_web_search=None, system_persona=None):
-    """
-    Run web search if needed and build prompt. Return (prompt, sources, fail_msg).
-    fail_msg is non-None only when web search was used and returned no context.
-    Pass use_web_search (bool) to avoid calling needs_web_search again.
-    """
-    if use_web_search is None:
-        use_web_search = needs_web_search(question)
-    if not use_web_search:
-        prompt = _build_prompt(memory_context, question, extra_context=extra_context, system_persona=system_persona)
-        return (prompt, [], None)
-    if log_search:
-        print("\n🔎 Searching the web...\n")
-    context, sources = web_search(question)
-    if not context:
-        return (None, [], WEB_SEARCH_FAIL_MSG)
-    prompt = _build_prompt(memory_context, question, web_context=context, extra_context=extra_context, system_persona=system_persona)
-    return (prompt, sources, None)
-
-
-def answer(question, extra_context=None, images=None, persona_id=None):
-    """
-    Answer a question using memory, optional extra context, and web search when needed.
-    extra_context: optional string (e.g. user preferences, session facts) included in the prompt.
-    images: optional list of base64-encoded image strings; each is summarized as text and stored in memory.
-    persona_id: optional persona id; uses that persona's config and memory. Defaults to first available persona.
-    Returns (response_text, sources) where sources is a list of strings (e.g. URLs) when web search was used.
-    """
-    system_persona, decision_model, model, vl_model, memory_file = _persona_settings(persona_id)
-    use_web_search = needs_web_search(question, decision_model=decision_model)
-    has_images = bool(images)
-    include_prior = not has_images or needs_prior_image_context(question, decision_model=decision_model)
-    images, image_context, memory_context = _prepare_answer(
-        question, images=images, include_prior_image_context=include_prior, memory_file=memory_file
-    )
-    prompt, sources, fail = _get_prompt_and_sources(
-        question, memory_context, extra_context, log_search=True, use_web_search=use_web_search, system_persona=system_persona
-    )
-    if fail:
-        _add_turn_to_memory(question, fail, image_context, memory_file=memory_file, sources=[])
-        return (fail, [])
-    main_model = vl_model if has_images else model
-    return _run_ollama_and_save(prompt, question, images, image_context, sources, memory_file=memory_file, model=main_model)
-
-
-def answer_stream(question, extra_context=None, images=None, image_context=None, persona_id=None):
-    """
-    Stream an answer: yields {"searching": True} when doing web search,
-    then {"token": "..."} for each token, then {"done": True, "sources": [...]}.
-    images: optional list of base64-encoded image strings (should be already resized if from prepare_images_for_stream).
-    image_context: optional pre-computed text summary of images; if None and images given, computed here (can raise).
-    persona_id: optional persona id; uses that persona's config and memory.
-    """
-    system_persona, decision_model, model, vl_model, memory_file = _persona_settings(persona_id)
-    use_web_search = needs_web_search(question, decision_model=decision_model)
-    if use_web_search:
-        yield {"searching": True}
-
-    has_images = bool(images)
-    include_prior = not has_images or needs_prior_image_context(question, decision_model=decision_model)
-    images, image_context, memory_context = _prepare_answer(
-        question, images=images, image_context=image_context, include_prior_image_context=include_prior, memory_file=memory_file
-    )
-    prompt, sources, fail = _get_prompt_and_sources(
-        question, memory_context, extra_context, use_web_search=use_web_search, system_persona=system_persona
-    )
-    if fail:
-        user_ts, assistant_ts = _add_turn_to_memory(question, fail, image_context, memory_file=memory_file, sources=[])
-        yield {"done": True, "sources": [], "final": fail, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
-        return
-    main_model = vl_model if has_images else model
-    yield from _stream_ollama_and_save(prompt, question, images, image_context, sources, memory_file=memory_file, model=main_model)
+    assistant_memory.content = response
+    assistant_memory.sources = list(prompt.sources)
+    assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+    yield {"done": True, "sources": prompt.sources, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}

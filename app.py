@@ -6,6 +6,7 @@ from flask_cors import CORS
 from agent_core import answer, answer_stream, prepare_images_for_stream
 from memory import get_recent_memory, delete_entry, clear_memory
 from personas import list_personas, get_persona_config, get_default_persona_id
+from comfyui import is_comfyui_running
 
 app = Flask(__name__)
 CORS(app)
@@ -78,8 +79,8 @@ def memory_recent():
     """Return recent memory entries (for loading chat history with timestamps). Query: persona_id (optional)."""
     persona_id = request.args.get("persona_id") or get_default_persona_id()
     memory_file = _memory_file_for_persona(persona_id)
-    entries = get_recent_memory(memory_file=memory_file)
-    return jsonify({"entries": entries})
+    memory_entries = get_recent_memory(memory_file=memory_file)
+    return jsonify({"entries": memory_entries.to_dict_list()})
 
 
 @app.route("/memory/delete", methods=["POST"])
@@ -104,6 +105,12 @@ def memory_clear():
     memory_file = _memory_file_for_persona(persona_id)
     clear_memory(memory_file=memory_file)
     return jsonify({"ok": True})
+
+
+@app.route("/comfyui/status", methods=["GET"])
+def comfyui_status():
+    """Return whether the ComfyUI server is reachable."""
+    return jsonify({"running": is_comfyui_running()})
 
 
 def _normalize_images(images):

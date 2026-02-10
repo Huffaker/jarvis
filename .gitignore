@@ -1,4 +1,4 @@
-# Persona data and memory (use personas_default as template; .personas is created on first run)
+# Persona data and memory (.personas is created on first run; add configs per README)
 .personas/
 memory.json
 
@@ -26,6 +26,9 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Generated images (saved when ComfyUI generates; folder created on first save)
+static/generated/*.png
 
 # OS
 .DS_Store

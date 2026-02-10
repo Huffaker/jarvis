@@ -1,24 +1,46 @@
 """
 Persona discovery and config loading.
 Each persona lives in .personas/<persona_id>/ with:
-  - <persona_id>.config  (JSON: name, public, system_persona, decision_model, model, vl_model)
+  - <persona_id>.config  (JSON: name, public, system_persona, decision_model, model, vl_model,
+      optional decisions: { "image_generation": true, "web_search": true, "prior_image_context": true },
+      optional comfyui: models_dir, diffusion_model_name, clip_model_name, vae_model_name)
   - memory.json         (persona-specific conversation memory)
 
-personas_default/ is the checked-in template; .personas/ is created from it on first use (gitignored).
+.personas/ is created on first use (gitignored). Add persona configs there; see README for an example.
+
+decisions: per-persona toggles for LLM-based decisions (each runs once per turn). Omitted keys default to true.
+  image_generation: whether to detect "generate an image" and route to image gen.
+  web_search: whether to detect need for current info and run web search.
+  prior_image_context: whether to include prior image context from memory when formatting context.
 """
 import json
-import shutil
 from pathlib import Path
 
-PERSONAS_DIR = Path(".personas")
-PERSONAS_DEFAULT_DIR = Path("personas_default")
+from app_types.persona import (
+    DEFAULT_DECISION_MODEL,
+    DEFAULT_MODEL,
+    DEFAULT_NAME,
+    DEFAULT_SYSTEM_PERSONA,
+    DEFAULT_VL_MODEL,
+    Decisions,
+    Persona,
+)
+
+# Re-export defaults for callers (e.g. agent_core) that use these names
+SYSTEM_PERSONA = DEFAULT_SYSTEM_PERSONA
+DECISION_MODEL = DEFAULT_DECISION_MODEL
+MODEL = DEFAULT_MODEL
+VL_MODEL = DEFAULT_VL_MODEL
+
+# Resolve relative to this module so personas are found regardless of process CWD
+_ROOT = Path(__file__).resolve().parent
+PERSONAS_DIR = _ROOT / ".personas"
 MEMORY_FILENAME = "memory.json"
 
 
 def _ensure_personas_dir():
-    """If .personas does not exist, copy from personas_default so the app works out of the box."""
-    if not PERSONAS_DIR.exists() and PERSONAS_DEFAULT_DIR.is_dir():
-        shutil.copytree(PERSONAS_DEFAULT_DIR, PERSONAS_DIR)
+    """Create .personas if it does not exist so the app can run. Users add persona configs here (see README)."""
+    PERSONAS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _persona_dirs():
@@ -97,3 +119,52 @@ def get_default_persona_id() -> str:
     if personas:
         return personas[0]["id"]
     return "assistant"
+
+
+def persona_settings(persona_id: str | None):
+    """
+    Resolve persona_id to (system_persona, decision_model, model, vl_model, memory_path, decisions_config).
+    memory_path is None to use global memory. persona_id None uses default persona.
+    decisions_config is a Decisions instance; pass to code that expects .get(key, True).
+    """
+    pid = persona_id or get_default_persona_id()
+    cfg = get_persona_config(pid)
+    decisions_config = Decisions(cfg.get("decisions", {}) if cfg else {})
+    if not cfg:
+        return (DEFAULT_SYSTEM_PERSONA, DEFAULT_DECISION_MODEL, DEFAULT_MODEL, DEFAULT_VL_MODEL, None, decisions_config)
+    return (
+        cfg.get("system_persona") or DEFAULT_SYSTEM_PERSONA,
+        cfg.get("decision_model") or DEFAULT_DECISION_MODEL,
+        cfg.get("model") or DEFAULT_MODEL,
+        cfg.get("vl_model") or DEFAULT_VL_MODEL,
+        cfg.get("memory_path"),
+        decisions_config,
+    )
+
+
+def persona_from_id(persona_id: str | None) -> Persona:
+    """Build a Persona from persona_id. Uses default persona when persona_id is None."""
+    pid = persona_id or get_default_persona_id()
+    cfg = get_persona_config(pid)
+    decisions = Decisions(cfg.get("decisions", {}) if cfg else {})
+    if not cfg:
+        return Persona(
+            id=pid,
+            name=DEFAULT_NAME,
+            system_persona=DEFAULT_SYSTEM_PERSONA,
+            decision_model=DEFAULT_DECISION_MODEL,
+            model=DEFAULT_MODEL,
+            vl_model=DEFAULT_VL_MODEL,
+            memory_path=None,
+            decisions=decisions,
+        )
+    return Persona(
+        id=pid,
+        name=cfg.get("name", DEFAULT_NAME),
+        system_persona=cfg.get("system_persona") or DEFAULT_SYSTEM_PERSONA,
+        decision_model=cfg.get("decision_model") or DEFAULT_DECISION_MODEL,
+        model=cfg.get("model") or DEFAULT_MODEL,
+        vl_model=cfg.get("vl_model") or DEFAULT_VL_MODEL,
+        memory_path=cfg.get("memory_path"),
+        decisions=decisions,
+    )

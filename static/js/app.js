@@ -220,6 +220,7 @@ async function send() {
         var buffer = "";
         var fullText = "";
         var sources = [];
+        var generatedImageBase64 = null;
         var showingThinking = true;
         var hasAnyThinking = false;
         var reader = res.body.getReader();
@@ -255,6 +256,7 @@ async function send() {
                                 await yieldToPaint();
                             }
                         } else if (event.token !== undefined) {
+                            hideThinking();
                             if (showingThinking) {
                                 showingThinking = false;
                                 thinkingSection.classList.add("collapsed");
@@ -270,10 +272,14 @@ async function send() {
                                 scrollMessagesToBottom();
                             }
                         } else if (event.done) {
+                            hideThinking();
                             if (event.final !== undefined) {
                                 fullText = event.final;
                                 responseDiv.style.display = "";
                                 responseDiv.textContent = fullText;
+                            }
+                            if (event.image_result && event.image_result.image_base64) {
+                                generatedImageBase64 = event.image_result.image_base64;
                             }
                             if (event.error) {
                                 responseDiv.classList.add("error");
@@ -298,6 +304,17 @@ async function send() {
         }
         if (sources && sources.length) {
             addSourcesToMessage(sources, msgDiv);
+        }
+        if (generatedImageBase64) {
+            var imgWrap = document.createElement("div");
+            imgWrap.className = "message-generated-image";
+            var img = document.createElement("img");
+            img.src = "data:image/png;base64," + generatedImageBase64;
+            img.alt = "Generated image";
+            img.className = "generated-image";
+            imgWrap.appendChild(img);
+            bodyDiv.appendChild(imgWrap);
+            scrollMessagesToBottom();
         }
     } catch (err) {
         showError("Could not reach the server. Check that it is running and try again.");
@@ -417,6 +434,19 @@ async function loadMemory() {
             var text = entry.content || "";
             if (entry.image_context) text += "\n[Image: " + entry.image_context + "]";
             var msgEl = addMessage(sender, text, cls, null, entry.timestamp);
+            if (cls === "assistant" && entry.generated_image_path) {
+                var body = msgEl.querySelector(".message-body");
+                if (body) {
+                    var imgWrap = document.createElement("div");
+                    imgWrap.className = "message-generated-image";
+                    var img = document.createElement("img");
+                    img.src = entry.generated_image_path;
+                    img.alt = "Generated image";
+                    img.className = "generated-image";
+                    imgWrap.appendChild(img);
+                    body.appendChild(imgWrap);
+                }
+            }
             if (cls === "assistant" && entry.sources && entry.sources.length) {
                 addSourcesToMessage(entry.sources, msgEl);
             }

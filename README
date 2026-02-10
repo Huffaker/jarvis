@@ -1,5 +1,42 @@
 python -m pip install -r requirements.txt
 
+Configuration (local, not in git)
+  Copy .env.example to .env and set any values for your machine. The app loads .env
+  from the project root so you don't need to set environment variables in the shell.
+
+  For image generation: ComfyUI must be running before you use it. Start ComfyUI manually
+  (e.g. python main.py from your ComfyUI folder). Optionally set COMFYUI_URL in .env if
+  your server uses a different port (default http://127.0.0.1:8188).
+
+Personas (setup)
+  The app creates a .personas directory on first run. To add a persona, create a folder
+  .personas/<persona_id>/ and put a config file there named <persona_id>.config or config (JSON).
+
+  Example: .personas/assistant/assistant.config
+
+  {
+    "name": "Assistant",
+    "public": true,
+    "system_persona": "You are a helpful AI assistant. You remain accurate, concise, and calm.",
+    "decision_model": "qwen3:0.6b",
+    "model": "qwen3:4b",
+    "vl_model": "qwen3-vl:4b",
+    "decisions": {
+      "image_generation": true,
+      "web_search": true,
+      "prior_image_context": true
+    },
+    "comfyui": {
+      "diffusion_model_name": "z-image-turbo-fp8-e4m3fn.safetensors",
+      "clip_model_name": "qwen_3_4b.safetensors",
+      "vae_model_name": "ae.safetensors"
+    }
+  }
+
+  Optional: "decisions" toggles LLM-based features (omit or set true/false). Optional: "comfyui"
+  for image generation model names. Conversation memory is stored in .personas/<persona_id>/memory.json
+  and is created automatically when you use that persona.
+
 python agent_cli.py
 python app.py
 
