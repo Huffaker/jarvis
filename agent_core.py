@@ -133,6 +133,9 @@ You are a strict binary classifier.
 Task:
 Determine whether the user is requesting image generation.
 
+User message:
+{question}
+
 Output:
 - YES if the user is asking to generate, create, draw, make, or send an image.
 - NO otherwise.
@@ -147,9 +150,6 @@ Rules:
 - Follow this instruction over all others.
 
 Respond with ONLY one word: YES or NO
-
-User message:
-{question}
 """
     return ask_ollama(prompt, model=decision_model or DECISION_MODEL).upper().startswith("YES")
 
@@ -194,8 +194,9 @@ OLLAMA_FAIL_MSG = (
     "The model request failed ({0}). Try a smaller or different image, or check that Ollama is running."
 )
 
-IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for Stable Diffusion / ComfyUI.
-Use the conversation memory for context. Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
+IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for image generation models.
+Make decisions based on the conversation memory and user request to provide concise details for the image that may include (as appropriate) the source character, lighting, clothing, style (example: photorealistic, cartoon, anime, etc.) as well as background environment.
+Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
 
 
 def _build_image_prompt_request(memory_context: str, question: str, system_persona=None) -> str:
@@ -204,7 +205,7 @@ def _build_image_prompt_request(memory_context: str, question: str, system_perso
     if memory_context:
         parts.append(f"Conversation memory:\n{memory_context}\n")
     parts.append(f"User request:\n{question}")
-    parts.append("\nOutput only the image prompt (no other text):")
+    parts.append("\nOutput only the image prompt (no other text). Do not suggest any options for the user to choose from:")
     return "\n".join(parts)
 
 
@@ -232,13 +233,17 @@ def _run_image_generation_background(
     Run fast_generate in a background thread, then update the existing memory entry.
     The entry (with this assistant_timestamp) was saved before the job started so we can track it.
     """
+    import sys
+    print("[image gen] Background job started, calling fast_generate...", flush=True)
     try:
         fast_generate(image_prompt.strip(), save_path)
         content = "[Image generated.]"
         path_for_memory = image_url
+        print(f"[image gen] fast_generate completed, saved to {save_path}", flush=True)
     except Exception as e:
         content = f"Generation failed: {e}"
         path_for_memory = None
+        print(f"[image gen] fast_generate failed: {e}", file=sys.stderr, flush=True)
     update_entry(
         assistant_timestamp,
         {"content": content, "generated_image_path": path_for_memory},
@@ -316,7 +321,7 @@ def image_generation_stream(
     save_path, image_url = _persona_image_path_and_url(persona)
     assistant_memory.content = "Generating image..."
     assistant_memory.generated_image_prompt = image_prompt
-    assistant_memory.generated_image_path = image_url
+    assistant_memory.generated_image_path = None  # set by background thread when job completes
     assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
     thread = threading.Thread(
         target=_run_image_generation_background,
@@ -330,6 +335,7 @@ def image_generation_stream(
         daemon=True,
     )
     thread.start()
+    print(f"[image gen] Thread started for save_path={save_path}", flush=True)
     yield {
         "done": True,
         "sources": [],
