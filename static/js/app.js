@@ -221,6 +221,7 @@ async function send() {
         var fullText = "";
         var sources = [];
         var generatedImageBase64 = null;
+        var generatedImagePath = null;
         var showingThinking = true;
         var hasAnyThinking = false;
         var reader = res.body.getReader();
@@ -278,8 +279,12 @@ async function send() {
                                 responseDiv.style.display = "";
                                 responseDiv.textContent = fullText;
                             }
-                            if (event.image_result && event.image_result.image_base64) {
-                                generatedImageBase64 = event.image_result.image_base64;
+                            if (event.image_result) {
+                                if (event.image_result.generated_image_path) {
+                                    generatedImagePath = event.image_result.generated_image_path;
+                                } else if (event.image_result.image_base64) {
+                                    generatedImageBase64 = event.image_result.image_base64;
+                                }
                             }
                             if (event.error) {
                                 responseDiv.classList.add("error");
@@ -305,11 +310,11 @@ async function send() {
         if (sources && sources.length) {
             addSourcesToMessage(sources, msgDiv);
         }
-        if (generatedImageBase64) {
+        if (generatedImagePath || generatedImageBase64) {
             var imgWrap = document.createElement("div");
             imgWrap.className = "message-generated-image";
             var img = document.createElement("img");
-            img.src = "data:image/png;base64," + generatedImageBase64;
+            img.src = generatedImagePath ? generatedImagePath : "data:image/png;base64," + generatedImageBase64;
             img.alt = "Generated image";
             img.className = "generated-image";
             imgWrap.appendChild(img);

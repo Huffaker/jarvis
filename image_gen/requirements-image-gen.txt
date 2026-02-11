@@ -1,0 +1,25 @@
+# Image generation (diffusion) dependencies – optional; main app runs without these.
+# When installed, enable in workflow via .env USE_LOCAL_DIFFUSION=1 or persona comfyui "use_local_diffusion": true.
+#
+# Install in order below. If you get "DLL load failed while importing _C":
+#   1. Install Microsoft Visual C++ Redistributable (latest):
+#      https://aka.ms/vs/17/release/vc_redist.x64.exe
+#   2. Reinstall PyTorch using the official command for your setup (CPU or CUDA):
+#      https://pytorch.org/get-started/locally/
+
+# 1) PyTorch – install first via the command that matches your system, e.g.:
+#    CPU only (simplest, fewer DLL issues):
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#    CUDA 12.1 (if you have an NVIDIA GPU):
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#    Then from image_gen/: pip install -r requirements-image-gen.txt
+
+# 2) Diffusers and image deps (install after PyTorch).
+#    InterpolationMode error? Reinstall torch+torchvision together from one index, then pip install -r this file again:
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#      pip install -r image_gen/requirements-image-gen.txt
+diffusers>=0.30.0
+transformers>=4.44.0
+accelerate
+safetensors
+

@@ -1,10 +1,15 @@
 import json
+import os
 import threading
+from pathlib import Path
+
 from datetime import datetime, timezone
 
 from app_types.memory import MemoryEntries, MemoryEntry
+from personas import PERSONAS_DIR
 
 MEMORY_FILE = "memory.json"
+_ROOT = Path(__file__).resolve().parent
 
 # Serialize all file access so concurrent web requests don't corrupt or lose updates.
 _memory_lock = threading.Lock()
@@ -21,6 +26,31 @@ def _cap_content(content: str, max_len: int = MAX_ITEM_CHARS) -> str:
     if not content or len(content) <= max_len:
         return content or ""
     return content[: max_len - 3].rstrip() + "..."
+
+
+def _delete_generated_image_file(url_path: str | None) -> None:
+    """
+    If url_path is a known generated-image URL, delete the corresponding file from disk.
+    Supports /personas/<id>/images/<filename> and legacy /static/generated/<filename>.
+    """
+    if not url_path or not url_path.startswith("/"):
+        return
+    url_path = url_path.strip()
+    # Persona images: /personas/<persona_id>/images/<filename>
+    if url_path.startswith("/personas/") and "/images/" in url_path:
+        prefix = "/personas/"
+        suffix = "/images/"
+        try:
+            after_prefix = url_path[len(prefix) :]
+            id_part, filename = after_prefix.split(suffix, 1)
+            if ".." in filename or "/" in filename or "\\" in filename or not filename:
+                return
+            fs_path = os.path.join(PERSONAS_DIR, id_part, "images", filename)
+            if os.path.isfile(fs_path):
+                os.remove(fs_path)
+        except (ValueError, OSError):
+            pass
+        return
 
 
 def _load_memory_unlocked(memory_file: str | None = None) -> MemoryEntries:
@@ -91,26 +121,55 @@ def add_to_memory(entry: MemoryEntry, memory_file: str | None = None) -> str:
         if entry.generated_image_prompt and entry.role == "assistant":
             generated_image_prompt = _cap_content(entry.generated_image_prompt)
 
+        entry.timestamp = ts
         data.entries.append(entry)
         _save_memory_unlocked(data, memory_file)
     return ts
 
 
-def delete_entry(timestamp: str, memory_file: str | None = None) -> bool:
-    """Remove the entry with the given timestamp. Returns True if one was removed."""
+def update_entry(timestamp: str, updates: dict, memory_file: str | None = None) -> bool:
+    """
+    Update an existing entry by timestamp. updates can include content, generated_image_path,
+    generated_image_prompt, etc. Content and generated_image_prompt are capped. Returns True if updated.
+    """
     with _memory_lock:
         data = _load_memory_unlocked(memory_file)
-        n = len(data.entries)
-        data.entries = [e for e in data.entries if e.timestamp != timestamp]
-        if len(data.entries) < n:
-            _save_memory_unlocked(data, memory_file)
-            return True
+        for e in data.entries:
+            if e.timestamp == timestamp:
+                if "content" in updates:
+                    e.content = _cap_content(updates["content"])
+                if "generated_image_path" in updates:
+                    e.generated_image_path = updates["generated_image_path"]
+                if "generated_image_prompt" in updates:
+                    e.generated_image_prompt = _cap_content(updates["generated_image_prompt"], MAX_ITEM_CHARS)
+                _save_memory_unlocked(data, memory_file)
+                return True
     return False
 
 
-def clear_memory(memory_file: str | None = None) -> None:
-    """Remove all entries from memory."""
+def delete_entry(timestamp: str, memory_file: str | None = None) -> bool:
+    """Remove the entry with the given timestamp. Deletes its generated image file if any. Returns True if one was removed."""
     with _memory_lock:
+        data = _load_memory_unlocked(memory_file)
+        removed = None
+        for e in data.entries:
+            if e.timestamp == timestamp:
+                removed = e
+                break
+        if removed is None:
+            return False
+        _delete_generated_image_file(removed.generated_image_path)
+        data.entries = [e for e in data.entries if e.timestamp != timestamp]
+        _save_memory_unlocked(data, memory_file)
+        return True
+
+
+def clear_memory(memory_file: str | None = None) -> None:
+    """Remove all entries from memory and delete their generated image files."""
+    with _memory_lock:
+        data = _load_memory_unlocked(memory_file)
+        for e in data.entries:
+            _delete_generated_image_file(e.generated_image_path)
         path = memory_file or MEMORY_FILE
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"entries": []}, f, indent=2)

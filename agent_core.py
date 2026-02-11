@@ -1,12 +1,12 @@
-import base64
 import json
 import os
+import threading
 import requests
 from ddgs import DDGS
 from datetime import datetime, timezone
 
 from image_context import prepare_images_for_stream, resize_image_for_llm, image_context_for_images
-from memory import add_to_memory, get_recent_memory
+from memory import add_to_memory, get_recent_memory, update_entry
 from app_types.memory import MemoryEntry
 from personas import (
     DECISION_MODEL,
@@ -17,8 +17,10 @@ from personas import (
     get_default_persona_id,
     persona_from_id,
     persona_settings,
+    PERSONAS_DIR,
 )
-from comfyui import generate_image as comfyui_generate_image
+from image_gen.diffusion import fast_generate
+from comfyui import generate_image
 from app_types.persona import Persona
 from app_types.prompt import Prompt
 
@@ -108,6 +110,7 @@ Question:
 {question}
 
 Does answering this question require prior image context from previous images the user has sent?
+Do NOT explain your reasoning.
 
 Respond with ONLY one word:
 YES or NO
@@ -124,7 +127,8 @@ Question:
 {question}
 
 Answer YES if the user is asking you to generate, create, draw, or make an image (e.g. "draw a cat", "generate an image of", "create a picture of", "make me an image").
-Answer NO for all other requests (questions, chat, edit an existing image, search, etc.).
+Answer NO for all other requests (questions, chat, edit an existing image, search, "tell me...", etc.).
+Do NOT explain your reasoning.
 
 Respond with ONLY one word: YES or NO
 """
@@ -185,51 +189,42 @@ def _build_image_prompt_request(memory_context: str, question: str, system_perso
     return "\n".join(parts)
 
 
-def _run_image_generation_with_prompt(
-    image_prompt: str,
-    question: str,
-    image_context: str | None,
-    persona: Persona,
-) -> tuple[str, str | None, dict]:
-    """
-    Run ComfyUI with the given image prompt; build response text and save image to static/generated.
-    Does NOT add to memory. Returns (response_text, generated_image_path, image_result).
-    """
-    cfg = get_persona_config(persona.id) if persona.id else None
-    comfyui_config = (cfg or {}).get("comfyui")
-    image_result = comfyui_generate_image(image_prompt, comfyui_config=comfyui_config)
-    if image_result.get("status") == "placeholder":
-        response_text = (
-            "*ComfyUI integration is not yet connected. Replace `comfyui.generate_image()` to call your ComfyUI API.*"
-        )
-        generated_image_path = None
-    elif image_result.get("status") == "ok" and image_result.get("image_base64"):
-        response_text = f"[Image generated.]"
-        generated_image_path = _save_generated_image(image_result["image_base64"])
-    else:
-        err = image_result.get("error") or image_result.get("message") or "Unknown error"
-        response_text = f"Generation failed: {err}"
-        generated_image_path = None
-    return (response_text, generated_image_path, image_result)
+def _persona_image_path_and_url(persona: Persona) -> tuple[str, str]:
+    """Return (filesystem_path, url_path) for the next image in this persona's images folder."""
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%d_%H%M%S") + "_" + str(now.microsecond)
+    filename = f"{ts}.png"
+    persona_id = persona.id or "default"
+    images_dir = os.path.join(PERSONAS_DIR, persona_id, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    fs_path = os.path.join(images_dir, filename)
+    url_path = f"/personas/{persona_id}/images/{filename}"
+    return (fs_path, url_path)
 
-def _save_generated_image(image_base64: str) -> str | None:
-    """Save base64 PNG to static/generated/<timestamp>.png. Return URL path e.g. /static/generated/xxx.png or None on failure."""
+
+def _run_image_generation_background(
+    image_prompt: str,
+    save_path: str,
+    image_url: str,
+    memory_file: str | None,
+    assistant_timestamp: str,
+) -> None:
+    """
+    Run fast_generate in a background thread, then update the existing memory entry.
+    The entry (with this assistant_timestamp) was saved before the job started so we can track it.
+    """
     try:
-        root = os.path.dirname(os.path.abspath(__file__))
-        gen_dir = os.path.join(root, "static", "generated")
-        os.makedirs(gen_dir, exist_ok=True)
-        now = datetime.now(timezone.utc)
-        ts = now.strftime("%Y%m%d_%H%M%S") + "_" + str(now.microsecond)
-        filename = f"{ts}.png"
-        path = os.path.join(gen_dir, filename)
-        data = base64.b64decode(image_base64)
-        with open(path, "wb") as f:
-            f.write(data)
-        return f"/static/generated/{filename}"
+        fast_generate(image_prompt.strip(), save_path)
+        content = "[Image generated.]"
+        path_for_memory = image_url
     except Exception as e:
-        import sys
-        print(f"Failed to save generated image to disk: {e}", file=sys.stderr)
-        return None
+        content = f"Generation failed: {e}"
+        path_for_memory = None
+    update_entry(
+        assistant_timestamp,
+        {"content": content, "generated_image_path": path_for_memory},
+        memory_file=memory_file,
+    )
 
 
 def _run_ollama_and_save(prompt, question, images, image_context, sources, memory_file=None, model=None):
@@ -272,8 +267,10 @@ def image_generation_stream(
     memory_file: str | None,
 ):
     """
-    Transform: if the question is an image-generation request, run LLM→ComfyUI, fill assistant_memory, yield events, and yield {"done": True, ...}.
-    Otherwise return (prompt, assistant_memory) unchanged so the caller continues to the main LLM.
+    Transform: if the question is an image-generation request, run LLM for image prompt, yield
+    "Generating image...", close the stream, and run diffusion in a background thread (which
+    adds the assistant turn to memory when done). Otherwise return (prompt, assistant_memory)
+    unchanged so the caller continues to the main LLM.
     """
     if not persona.decisions.get("image_generation", True):
         return prompt, assistant_memory
@@ -297,19 +294,29 @@ def image_generation_stream(
         return prompt, assistant_memory
     image_prompt = "".join(image_prompt_parts).strip()
     yield {"thinking": "\n\nGenerating image...\n"}
-    response_text, generated_image_path, image_result = _run_image_generation_with_prompt(
-        image_prompt, question, image_context, persona
-    )
-    assistant_memory.content = response_text
+    save_path, image_url = _persona_image_path_and_url(persona)
+    assistant_memory.content = "Generating image..."
     assistant_memory.generated_image_prompt = image_prompt
-    assistant_memory.generated_image_path = generated_image_path
+    assistant_memory.generated_image_path = None
     assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+    generate_image(image_prompt.strip(), save_path)
+    # thread = threading.Thread(
+    #     target=_run_image_generation_background,
+    #     kwargs={
+    #         "image_prompt": image_prompt,
+    #         "save_path": save_path,
+    #         "image_url": image_url,
+    #         "memory_file": memory_file,
+    #         "assistant_timestamp": assistant_ts,
+    #     },
+    #     daemon=True,
+    # )
+    # thread.start()
     yield {
         "done": True,
         "sources": [],
-        "final": response_text,
-        "image_prompt": image_prompt,
-        "image_result": image_result,
+        "final": "Generating image...",
+        "image_generating_background": True,
         "user_timestamp": user_ts,
         "assistant_timestamp": assistant_ts,
     }

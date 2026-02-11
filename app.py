@@ -1,12 +1,12 @@
 import json
 import socket
 import sys
-from flask import Flask, request, jsonify, render_template, Response
+import os
+from flask import Flask, request, jsonify, render_template, Response, send_from_directory
 from flask_cors import CORS
 from agent_core import answer, answer_stream, prepare_images_for_stream
 from memory import get_recent_memory, delete_entry, clear_memory
-from personas import list_personas, get_persona_config, get_default_persona_id
-from comfyui import is_comfyui_running
+from personas import list_personas, get_persona_config, get_default_persona_id, PERSONAS_DIR
 
 app = Flask(__name__)
 CORS(app)
@@ -74,6 +74,17 @@ def persona_get(persona_id: str):
     return jsonify({"id": persona_id, "name": cfg.get("name", persona_id)})
 
 
+@app.route("/personas/<persona_id>/images/<filename>", methods=["GET"])
+def persona_image(persona_id: str, filename: str):
+    """Serve an image from the persona's images folder."""
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "invalid filename"}), 400
+    images_dir = os.path.join(PERSONAS_DIR, persona_id, "images")
+    if not os.path.isdir(images_dir):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(images_dir, filename)
+
+
 @app.route("/memory/recent", methods=["GET"])
 def memory_recent():
     """Return recent memory entries (for loading chat history with timestamps). Query: persona_id (optional)."""
@@ -107,10 +118,14 @@ def memory_clear():
     return jsonify({"ok": True})
 
 
-@app.route("/comfyui/status", methods=["GET"])
-def comfyui_status():
-    """Return whether the ComfyUI server is reachable."""
-    return jsonify({"running": is_comfyui_running()})
+@app.route("/image_gen/status", methods=["GET"])
+def image_gen_status():
+    """Return whether local image generation (diffusion) is available."""
+    try:
+        from image_gen import diffusion  # noqa: F401
+        return jsonify({"available": True})
+    except Exception:
+        return jsonify({"available": False})
 
 
 def _normalize_images(images):

@@ -6,7 +6,6 @@ Uses the default ComfyUI workflow: UNETLoader + CLIPLoader + VAE -> KSampler -> 
 The server must already be running. If it is not reachable, image generation returns an error.
 Optional config from .env: COMFYUI_URL, COMFYUI_DEBUG.
 """
-import base64
 import json
 import os
 import sys
@@ -15,6 +14,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+WIDTH, HEIGHT = 512, 512 # image size (must be divisible by pipeline's vae_scale_factor * 2)
 
 # Load .env from project root so COMFYUI_URL etc. can be set without exporting in the shell
 _env_path = Path(__file__).resolve().parent / ".env"
@@ -39,24 +40,41 @@ _DEFAULT_CLIP = os.environ.get("CLIP_MODEL_NAME", "qwen_3_4b.safetensors")
 _DEFAULT_VAE = os.environ.get("VAE_MODEL_NAME", "ae.safetensors")
 
 
-def _build_workflow(diffusion_name: str, clip_name: str, vae_name: str) -> dict:
-    """Build the default workflow dict with the given model names (from persona config or env)."""
+def _save_path_to_filename_prefix(save_path: str | None) -> str:
+    """Convert save_path from generate_image to a SaveImage filename_prefix (no extension, forward slashes)."""
+    if not save_path or not save_path.strip():
+        return "ollama-agent"
+    p = Path(save_path.strip())
+    prefix = str(p.with_suffix("")).replace("\\", "/")
+    return prefix or "ollama-agent"
+
+
+def _build_workflow(
+    diffusion_name: str,
+    clip_name: str,
+    vae_name: str,
+    save_path: str | None = None,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+) -> dict:
+    """Build the default workflow dict with the given model names, optional save path, and size."""
+    filename_prefix = _save_path_to_filename_prefix(save_path)
     return {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": diffusion_name, "weight_dtype": "fp8_e4m3fn"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "lumina2", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}},
-        "4": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1, "width": 512, "height": 512}},
+        "4": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1, "width": width, "height": height}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": ""}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": "bad hands, blurry, low quality"}},
         "7": {
             "class_type": "KSampler",
             "inputs": {
                 "model": ["10", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["4", 0],
-                "seed": 0, "steps": 8, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
+                "seed": 0, "steps": 10, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
             },
         },
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ollama-agent", "images": ["8", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": filename_prefix, "images": ["8", 0]}},
         "10":  {
             "inputs": {
             "shift": 3,
@@ -96,6 +114,7 @@ def is_comfyui_running() -> bool:
 
 
 def _request(method: str, path: str, data: dict | None = None, timeout: int = 60) -> dict | None:
+    """Send one HTTP request and wait for the full response (blocking)."""
     url = f"{COMFYUI_URL}{path}"
     if data is not None:
         body = json.dumps(data).encode("utf-8")
@@ -165,25 +184,32 @@ def _fetch_image_bytes(filename: str, type_dir: str = "output", subfolder: str =
         return resp.read()
 
 
-def generate_image(prompt: str, comfyui_config: dict | None = None) -> dict:
+def generate_image(
+    prompt: str,
+    save_path: str | None = None,
+    height: int = HEIGHT,
+    width: int = WIDTH,
+    comfyui_config: dict | None = None,
+) -> dict:
     """
     Generate an image from a text prompt using a local ComfyUI server.
 
     Model names and optional models_dir come from persona config (comfyui_config) or from env
-    DIFFUSION_MODEL_NAME, CLIP_MODEL_NAME, VAE_MODEL_NAME. models_dir is for reference; ComfyUI
-    server uses its own models path.
+    DIFFUSION_MODEL_NAME, CLIP_MODEL_NAME, VAE_MODEL_NAME. The save_path is passed to the
+    SaveImage node as filename_prefix (extension stripped, slashes normalized) so ComfyUI
+    writes the image to that path when run with --output-directory set to the project.
 
     Args:
         prompt: Image generation prompt (positive prompt for the default workflow).
+        save_path: Optional full path for the output image (used as SaveImage filename_prefix).
+        height, width: Output size passed to the EmptyLatentImage node in the workflow.
         comfyui_config: Optional dict from persona config with keys models_dir, diffusion_model_name,
             clip_model_name, vae_model_name. If None, env vars or defaults are used.
 
     Returns:
-        dict with:
-          - status: "ok" | "placeholder" | "error"
-          - prompt: the prompt that was used
-          - image_base64: optional base64-encoded PNG (when status == "ok")
-          - error: optional error message (when status == "error")
+        dict with status "ok" (queued) or "error". Fire-and-forget: we only wait for the
+        server to accept the job (one POST); ComfyUI writes the image to save_path when done.
+        No polling or image fetch. Keys: status, prompt, prompt_id (when ok), error (when error).
     """
     if not prompt or not prompt.strip():
         return {"status": "error", "prompt": prompt, "error": "Empty prompt"}
@@ -195,7 +221,7 @@ def generate_image(prompt: str, comfyui_config: dict | None = None) -> dict:
 
     try:
         _require_comfyui_running()
-        workflow = _build_workflow(diffusion_name, clip_name, vae_name)
+        workflow = _build_workflow(diffusion_name, clip_name, vae_name, save_path=save_path, width=width, height=height)
         workflow["5"]["inputs"]["text"] = prompt.strip()  # positive prompt = node 5
         workflow["7"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
 
@@ -203,35 +229,40 @@ def generate_image(prompt: str, comfyui_config: dict | None = None) -> dict:
             print("COMFYUI_DEBUG: workflow being sent:", json.dumps(workflow, indent=2), file=sys.stderr)
 
         prompt_id = _queue_prompt(workflow)
-        deadline = time.monotonic() + MAX_WAIT_SECONDS
-        while time.monotonic() < deadline:
-            time.sleep(POLL_INTERVAL)
-            history = _get_history(prompt_id)
-            if history is None:
-                continue
-            if "status" in history and history.get("status") == "error":
-                return {
-                    "status": "error",
-                    "prompt": prompt,
-                    "error": history.get("status_messages", ["Unknown error"]) or "ComfyUI reported an error",
-                }
-            img_info = _get_output_image(prompt_id, history)
-            if img_info:
-                filename = img_info.get("filename", "")
-                type_dir = img_info.get("type", "output")
-                subfolder_str = img_info.get("subfolder", "")
-                b = _fetch_image_bytes(filename, type_dir=type_dir, subfolder=subfolder_str)
-                b64 = base64.b64encode(b).decode("ascii")
-                return {
-                    "status": "ok",
-                    "prompt": prompt,
-                    "image_base64": b64,
-                }
         return {
-            "status": "error",
+            "status": "ok",
             "prompt": prompt,
-            "error": "ComfyUI did not finish within the timeout",
+            "prompt_id": prompt_id,
         }
+    #     deadline = time.monotonic() + MAX_WAIT_SECONDS
+    #     while time.monotonic() < deadline:
+    #         time.sleep(POLL_INTERVAL)
+    #         history = _get_history(prompt_id)
+    #         if history is None:
+    #             continue
+    #         if "status" in history and history.get("status") == "error":
+    #             return {
+    #                 "status": "error",
+    #                 "prompt": prompt,
+    #                 "error": history.get("status_messages", ["Unknown error"]) or "ComfyUI reported an error",
+    #             }
+    #         img_info = _get_output_image(prompt_id, history)
+    #         if img_info:
+    #             filename = img_info.get("filename", "")
+    #             type_dir = img_info.get("type", "output")
+    #             subfolder_str = img_info.get("subfolder", "")
+    #             b = _fetch_image_bytes(filename, type_dir=type_dir, subfolder=subfolder_str)
+    #             b64 = base64.b64encode(b).decode("ascii")
+    #             return {
+    #                 "status": "ok",
+    #                 "prompt": prompt,
+    #                 "image_base64": b64,
+    #             }
+    #     return {
+    #         "status": "error",
+    #         "prompt": prompt,
+    #         "error": "ComfyUI did not finish within the timeout",
+    #     }
     except Exception as e:
         return {
             "status": "error",
