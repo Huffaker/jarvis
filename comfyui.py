@@ -229,40 +229,36 @@ def generate_image(
             print("COMFYUI_DEBUG: workflow being sent:", json.dumps(workflow, indent=2), file=sys.stderr)
 
         prompt_id = _queue_prompt(workflow)
+        
+        deadline = time.monotonic() + MAX_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL)
+            history = _get_history(prompt_id)
+            if history is None:
+                continue
+            if "status" in history and history.get("status") == "error":
+                return {
+                    "status": "error",
+                    "prompt": prompt,
+                    "error": history.get("status_messages", ["Unknown error"]) or "ComfyUI reported an error",
+                }
+            img_info = _get_output_image(prompt_id, history)
+            if img_info:
+                filename = img_info.get("filename", "")
+                type_dir = img_info.get("type", "output")
+                subfolder_str = img_info.get("subfolder", "")
+                b = _fetch_image_bytes(filename, type_dir=type_dir, subfolder=subfolder_str)
+                b64 = base64.b64encode(b).decode("ascii")
+                return {
+                    "status": "ok",
+                    "prompt": prompt,
+                    "image_base64": b64,
+                }
         return {
-            "status": "ok",
+            "status": "error",
             "prompt": prompt,
-            "prompt_id": prompt_id,
+            "error": "ComfyUI did not finish within the timeout",
         }
-    #     deadline = time.monotonic() + MAX_WAIT_SECONDS
-    #     while time.monotonic() < deadline:
-    #         time.sleep(POLL_INTERVAL)
-    #         history = _get_history(prompt_id)
-    #         if history is None:
-    #             continue
-    #         if "status" in history and history.get("status") == "error":
-    #             return {
-    #                 "status": "error",
-    #                 "prompt": prompt,
-    #                 "error": history.get("status_messages", ["Unknown error"]) or "ComfyUI reported an error",
-    #             }
-    #         img_info = _get_output_image(prompt_id, history)
-    #         if img_info:
-    #             filename = img_info.get("filename", "")
-    #             type_dir = img_info.get("type", "output")
-    #             subfolder_str = img_info.get("subfolder", "")
-    #             b = _fetch_image_bytes(filename, type_dir=type_dir, subfolder=subfolder_str)
-    #             b64 = base64.b64encode(b).decode("ascii")
-    #             return {
-    #                 "status": "ok",
-    #                 "prompt": prompt,
-    #                 "image_base64": b64,
-    #             }
-    #     return {
-    #         "status": "error",
-    #         "prompt": prompt,
-    #         "error": "ComfyUI did not finish within the timeout",
-    #     }
     except Exception as e:
         return {
             "status": "error",

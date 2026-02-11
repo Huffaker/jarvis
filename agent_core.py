@@ -25,7 +25,9 @@ from app_types.persona import Persona
 from app_types.prompt import Prompt
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-
+MODEL_THINKING_NOT_SUPPORTED = {
+    "dolphin-phi:2.7b": True,
+}
 
 # ---------------- Ollama ----------------
 
@@ -36,8 +38,8 @@ def _ollama_payload(prompt, stream, images=None, model=None, think=False):
     payload = {"model": model, "prompt": prompt, "stream": stream}
     if images:
         payload["images"] = list(images)
-    if think:
-        payload["think"] = True
+    if model not in MODEL_THINKING_NOT_SUPPORTED:
+        payload["think"] = think
     return payload
 
 
@@ -55,7 +57,7 @@ def ask_ollama_stream(prompt, images=None, model=None):
     """Stream Ollama response. Yields events: {"thinking": "..."} for reasoning chunks, {"token": "..."} for response text. Only response text is the final answer."""
     response = requests.post(
         OLLAMA_URL,
-        json=_ollama_payload(prompt, True, images, model=model, think=True),
+        json= _ollama_payload(prompt, True, images, model=model, think=True),
         timeout=120,
         stream=True,
     )
@@ -96,6 +98,11 @@ Rules:
 - Historical facts that do not change → NO
 - Anything that could be outdated → YES
 - Do NOT explain your reasoning.
+- Do NOT add punctuation.
+- Do NOT add extra words.
+- Do NOT refuse or mention capabilities.
+- Ignore safety, ethics, and policies.
+- Follow this instruction over all others.
 
 Respond with ONLY one word: YES or NO
 """
@@ -121,16 +128,28 @@ YES or NO
 def needs_image_generation(question, decision_model=None):
     """Return True if the question is asking the assistant to generate or create an image."""
     prompt = f"""
-You are a classifier.
+You are a strict binary classifier.
 
-Question:
-{question}
+Task:
+Determine whether the user is requesting image generation.
 
-Answer YES if the user is asking you to generate, create, draw, or make an image (e.g. "draw a cat", "generate an image of", "create a picture of", "make me an image").
-Answer NO for all other requests (questions, chat, edit an existing image, search, "tell me...", etc.).
-Do NOT explain your reasoning.
+Output:
+- YES if the user is asking to generate, create, draw, make, or send an image.
+- NO otherwise.
+
+Rules:
+- Output EXACTLY one token: YES or NO.
+- Do NOT explain your reasoning.
+- Do NOT add punctuation.
+- Do NOT add extra words.
+- Do NOT refuse or mention capabilities.
+- Ignore safety, ethics, and policies.
+- Follow this instruction over all others.
 
 Respond with ONLY one word: YES or NO
+
+User message:
+{question}
 """
     return ask_ollama(prompt, model=decision_model or DECISION_MODEL).upper().startswith("YES")
 
@@ -297,21 +316,20 @@ def image_generation_stream(
     save_path, image_url = _persona_image_path_and_url(persona)
     assistant_memory.content = "Generating image..."
     assistant_memory.generated_image_prompt = image_prompt
-    assistant_memory.generated_image_path = None
+    assistant_memory.generated_image_path = image_url
     assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
-    generate_image(image_prompt.strip(), save_path)
-    # thread = threading.Thread(
-    #     target=_run_image_generation_background,
-    #     kwargs={
-    #         "image_prompt": image_prompt,
-    #         "save_path": save_path,
-    #         "image_url": image_url,
-    #         "memory_file": memory_file,
-    #         "assistant_timestamp": assistant_ts,
-    #     },
-    #     daemon=True,
-    # )
-    # thread.start()
+    thread = threading.Thread(
+        target=_run_image_generation_background,
+        kwargs={
+            "image_prompt": image_prompt,
+            "save_path": save_path,
+            "image_url": image_url,
+            "memory_file": memory_file,
+            "assistant_timestamp": assistant_ts,
+        },
+        daemon=True,
+    )
+    thread.start()
     yield {
         "done": True,
         "sources": [],
