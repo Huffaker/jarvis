@@ -194,9 +194,8 @@ OLLAMA_FAIL_MSG = (
     "The model request failed ({0}). Try a smaller or different image, or check that Ollama is running."
 )
 
-IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for image generation models.
-Make decisions based on the conversation memory and user request to provide concise details for the image that may include (as appropriate) the source character, lighting, clothing, style (example: photorealistic, cartoon, anime, etc.) as well as background environment.
-Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
+IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for Stable Diffusion / ComfyUI.
+Use the conversation memory for context. Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
 
 
 def _build_image_prompt_request(memory_context: str, question: str, system_persona=None) -> str:
