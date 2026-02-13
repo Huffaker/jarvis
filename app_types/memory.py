@@ -19,6 +19,7 @@ class MemoryEntry:
     sources: list[str] = field(default_factory=list)  # URLs, assistant only
     generated_image_path: str | None = None  # e.g. /static/generated/xxx.png, assistant only; UI only, not sent to LLM
     generated_image_prompt: str | None = None  # prompt used to generate the image (assistant only); optional in LLM context
+    summarized_content: str | None = None  # optional summary of content; used in prompts when present
 
     @classmethod
     def from_dict(cls, d: dict) -> "MemoryEntry":
@@ -33,6 +34,7 @@ class MemoryEntry:
             sources=list(d.get("sources") or []),
             generated_image_path=d.get("generated_image_path"),
             generated_image_prompt=d.get("generated_image_prompt"),
+            summarized_content=d.get("summarized_content"),
         )
 
     def to_dict(self) -> dict:
@@ -51,6 +53,8 @@ class MemoryEntry:
             out["generated_image_path"] = self.generated_image_path
         if self.generated_image_prompt:
             out["generated_image_prompt"] = self.generated_image_prompt
+        if self.summarized_content:
+            out["summarized_content"] = self.summarized_content
         return out
 
     def build_prompt(
@@ -58,8 +62,9 @@ class MemoryEntry:
         include_image_context: bool = True,
         include_generated_image_prompt: bool = True,
     ) -> str:
-        """Format this entry for inclusion in the LLM prompt. Omits sources, generated_image_path."""
-        line = f"{self.persona_name if self.role == 'assistant' else self.role}: {self.content}"
+        """Format this entry for inclusion in the LLM prompt. Omits sources, generated_image_path. Uses summarized_content when present."""
+        text = self.summarized_content if self.summarized_content else self.content
+        line = f"{self.persona_name if self.role == 'assistant' else self.role}: {text}"
         if self.image_context and include_image_context:
             line += f"\n[past image memory: {self.image_context}]"
         if self.web_context:

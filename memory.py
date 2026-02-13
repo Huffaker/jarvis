@@ -129,8 +129,8 @@ def add_to_memory(entry: MemoryEntry, memory_file: str | None = None) -> str:
 
 def update_entry(timestamp: str, updates: dict, memory_file: str | None = None) -> bool:
     """
-    Update an existing entry by timestamp. updates can include content, generated_image_path,
-    generated_image_prompt, etc. Content and generated_image_prompt are capped. Returns True if updated.
+    Update an existing entry by timestamp. updates can include content, summarized_content,
+    generated_image_path, generated_image_prompt, etc. Content and generated_image_prompt are capped. Returns True if updated.
     """
     with _memory_lock:
         data = _load_memory_unlocked(memory_file)
@@ -138,6 +138,8 @@ def update_entry(timestamp: str, updates: dict, memory_file: str | None = None) 
             if e.timestamp == timestamp:
                 if "content" in updates:
                     e.content = _cap_content(updates["content"])
+                if "summarized_content" in updates:
+                    e.summarized_content = _cap_content(updates["summarized_content"])
                 if "generated_image_path" in updates:
                     e.generated_image_path = updates["generated_image_path"]
                 if "generated_image_prompt" in updates:

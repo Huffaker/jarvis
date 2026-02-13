@@ -6,6 +6,7 @@ Uses the default ComfyUI workflow: UNETLoader + CLIPLoader + VAE -> KSampler -> 
 The server must already be running. If it is not reachable, image generation returns an error.
 Optional config from .env: COMFYUI_URL, COMFYUI_DEBUG.
 """
+import base64
 import json
 import os
 import sys
@@ -49,7 +50,17 @@ def _save_path_to_filename_prefix(save_path: str | None) -> str:
     return prefix or "ollama-agent"
 
 
-def _build_workflow(
+def _save_path_to_output_filename(save_path: str | None) -> str:
+    """Return the output filename that matches save_path (ComfyUI may add e.g. _00001 to the stored file)."""
+    if not save_path or not save_path.strip():
+        return "ollama-agent.png"
+    p = Path(save_path.strip())
+    if not p.suffix:
+        p = p.with_suffix(".png")
+    return p.name
+
+
+def _build_workflow_z_image(
     diffusion_name: str,
     clip_name: str,
     vae_name: str,
@@ -85,6 +96,77 @@ def _build_workflow(
             },
             "class_type": "ModelSamplingAuraFlow",
         }
+    }
+
+def _build_workflow_sdxl(
+    diffusion_name: str,
+    clip_name: str,
+    vae_name: str,
+    save_path: str | None = None,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+) -> dict:
+    """Build the default workflow dict with the given model names, optional save path, and size."""
+    filename_prefix = _save_path_to_filename_prefix(save_path)
+    return {
+        "3": {
+            "inputs": {
+                "seed": 754991832089941,
+                "steps": 20,
+                "cfg": 8,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0],
+            },
+            "class_type": "KSampler",
+            "_meta": {"title": "KSampler"},
+        },
+        "4": {
+            "inputs": {"ckpt_name": "lustifySDXLNSFW_ggwpV7.safetensors"},
+            "class_type": "CheckpointLoaderSimple",
+            "_meta": {"title": "Load Checkpoint"},
+        },
+        "5": {
+            "inputs": {"width": width, "height": height, "batch_size": 1},
+            "class_type": "EmptyLatentImage",
+            "_meta": {"title": "Empty Latent Image"},
+        },
+        "6": {
+            "inputs": {
+                "text": "",
+                "clip": ["4", 1],
+            },
+            "class_type": "CLIPTextEncode",
+            "_meta": {"title": "CLIP Text Encode (Prompt)"},
+        },
+        "7": {
+            "inputs": {
+                "text": "text, watermark, bad hands, blurry, low quality",
+                "clip": ["4", 1],
+            },
+            "class_type": "CLIPTextEncode",
+            "_meta": {"title": "CLIP Text Encode (Prompt)"},
+        },
+        "8": {
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2],
+            },
+            "class_type": "VAEDecode",
+            "_meta": {"title": "VAE Decode"},
+        },
+        "9": {
+            "inputs": {
+                "filename_prefix": filename_prefix,
+                "images": ["8", 0],
+            },
+            "class_type": "SaveImage",
+            "_meta": {"title": "Save Image"},
+        },
     }
 
 
@@ -221,7 +303,7 @@ def generate_image(
 
     try:
         _require_comfyui_running()
-        workflow = _build_workflow(diffusion_name, clip_name, vae_name, save_path=save_path, width=width, height=height)
+        workflow = _build_workflow_z_image(diffusion_name, clip_name, vae_name, save_path=save_path, width=width, height=height)
         workflow["5"]["inputs"]["text"] = prompt.strip()  # positive prompt = node 5
         workflow["7"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
 
@@ -244,15 +326,25 @@ def generate_image(
                 }
             img_info = _get_output_image(prompt_id, history)
             if img_info:
-                filename = img_info.get("filename", "")
+                comfy_filename = img_info.get("filename", "")
                 type_dir = img_info.get("type", "output")
                 subfolder_str = img_info.get("subfolder", "")
-                b = _fetch_image_bytes(filename, type_dir=type_dir, subfolder=subfolder_str)
+                b = _fetch_image_bytes(comfy_filename, type_dir=type_dir, subfolder=subfolder_str)
+                if save_path and save_path.strip():
+                    out_path = Path(save_path.strip())
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Remove ComfyUI's file with the wrong name if it's under the same output dir
+                    (out_path.parent / comfy_filename).unlink(missing_ok=True)
+                    if subfolder_str:
+                        (out_path.parent / subfolder_str / comfy_filename).unlink(missing_ok=True)
+                    out_path.write_bytes(b)
                 b64 = base64.b64encode(b).decode("ascii")
+                output_filename = _save_path_to_output_filename(save_path)
                 return {
                     "status": "ok",
                     "prompt": prompt,
                     "image_base64": b64,
+                    "filename": output_filename,
                 }
         return {
             "status": "error",

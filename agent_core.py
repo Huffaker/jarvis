@@ -36,7 +36,7 @@ def _ollama_payload(prompt, stream, images=None, model=None, think=False):
     """Build JSON payload for Ollama /api/generate. images: optional list of base64 strings. model: override (e.g. DECISION_MODEL). think: request thinking/reasoning stream for supported models."""
     if model is None:
         model = VL_MODEL if images else MODEL
-    payload = {"model": model, "prompt": prompt, "stream": stream}
+    payload = {"model": model, "prompt": prompt, "stream": stream, "keep_alive": 0}
     if images:
         payload["images"] = list(images)
     if model not in MODEL_THINKING_NOT_SUPPORTED:
@@ -154,6 +154,26 @@ Respond with ONLY one word: YES or NO
 """
     return ask_ollama(prompt, model=decision_model or DECISION_MODEL).upper().startswith("YES")
 
+def summarize_past_memory(response: str, decision_model=None):
+    """generate a summary of the memory entries for the assistant"""
+    prompt = f"""
+    You are a helpful assistant that summarizes a prior conversation to easier storage in memory.
+    Summarize the following message:
+    {response}
+    Output only the summary: no quotes, no explanation, no preamble. One paragraph, descriptive and concise.
+    """
+    return ask_ollama(prompt, model=decision_model or DECISION_MODEL).strip()
+
+# ---------------- Summarize Past Memories ----------------
+def _summarize_past_memory_background(response: str, memory_file: str, assistant_timestamp: str, decision_model=None):
+    """Summarize past memories in a background thread. Adds summarized_content; content is unchanged."""
+    content = summarize_past_memory(response, decision_model=decision_model)
+    update_entry(
+        assistant_timestamp,
+        {"summarized_content": content},
+        memory_file=memory_file,
+    )
+
 
 # ---------------- Search ----------------
 
@@ -241,7 +261,7 @@ def _run_image_generation_background(
     import sys
     print("[image gen] Background job started, calling fast_generate...", flush=True)
     try:
-        fast_generate(image_prompt.strip(), save_path)
+        generate_image(image_prompt.strip(), save_path)
         content = "[Image generated.]"
         path_for_memory = image_url
         print(f"[image gen] fast_generate completed, saved to {save_path}", flush=True)
@@ -420,4 +440,16 @@ def answer_stream(question, extra_context=None, images=None, image_context=None,
     assistant_memory.content = response
     assistant_memory.sources = list(prompt.sources)
     assistant_ts = add_to_memory(assistant_memory, memory_file=memory_file)
+    # New background thread for summarizing past memories
+    thread = threading.Thread(
+        target=_summarize_past_memory_background,
+        kwargs={
+            "response": response,
+            "memory_file": memory_file,
+            "assistant_timestamp": assistant_ts,
+            "decision_model": persona.decision_model,
+        },
+        daemon=True,
+    )
+    thread.start()
     yield {"done": True, "sources": prompt.sources, "user_timestamp": user_ts, "assistant_timestamp": assistant_ts}
