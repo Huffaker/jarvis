@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-WIDTH, HEIGHT = 512, 512 # image size (must be divisible by pipeline's vae_scale_factor * 2)
+WIDTH, HEIGHT = 1024, 1024 # image size (must be divisible by pipeline's vae_scale_factor * 2)
 
 # Load .env from project root so COMFYUI_URL etc. can be set without exporting in the shell
 _env_path = Path(__file__).resolve().parent / ".env"

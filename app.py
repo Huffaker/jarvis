@@ -171,6 +171,7 @@ def chat_stream():
     message = data.get("message", "").strip()
     images = _normalize_images(data.get("images") or [])
     persona_id = data.get("persona_id") or get_default_persona_id()
+    force_image_generation = data.get("generate_image", False) is True
     if not message and not images:
         return jsonify({"error": "message or images required"}), 400
 
@@ -186,6 +187,7 @@ def chat_stream():
             images=resized_images if resized_images else None,
             image_context=image_context,
             persona_id=persona_id,
+            force_image_generation=force_image_generation,
         ):
             yield "data: " + json.dumps(event) + "\n\n"
 

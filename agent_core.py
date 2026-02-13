@@ -27,6 +27,7 @@ from app_types.prompt import Prompt
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_THINKING_NOT_SUPPORTED = {
     "dolphin-phi:2.7b": True,
+    "dolphin-mistral:7b": True,
 }
 
 # ---------------- Ollama ----------------
@@ -194,13 +195,18 @@ OLLAMA_FAIL_MSG = (
     "The model request failed ({0}). Try a smaller or different image, or check that Ollama is running."
 )
 
-IMAGE_GEN_SYSTEM = """You help turn the user's request into a single, detailed image generation prompt suitable for Stable Diffusion / ComfyUI.
+IMAGE_GEN_SYSTEM_DEFAULT = """You help turn the user's request into a single, detailed image generation prompt suitable for Stable Diffusion / ComfyUI.
 Use the conversation memory for context. Output ONLY the image prompt itself: no quotes, no explanation, no preamble. One paragraph, descriptive (style, subject, lighting, quality tags as appropriate)."""
 
 
-def _build_image_prompt_request(memory_context: str, question: str, system_persona=None) -> str:
-    """Build a prompt that asks the LLM to output only an image-generation prompt."""
-    parts = [IMAGE_GEN_SYSTEM]
+def _build_image_prompt_request(
+    memory_context: str,
+    question: str,
+    image_gen_system: str | None = None,
+) -> str:
+    """Build a prompt that asks the LLM to output only an image-generation prompt. image_gen_system overrides the default (e.g. from persona config)."""
+    system = (image_gen_system or "").strip() or IMAGE_GEN_SYSTEM_DEFAULT
+    parts = [system]
     if memory_context:
         parts.append(f"Conversation memory:\n{memory_context}\n")
     parts.append(f"User request:\n{question}")
@@ -288,22 +294,30 @@ def image_generation_stream(
     image_context: str | None,
     user_ts: str,
     memory_file: str | None,
+    force_image_generation: bool = False,
 ):
     """
-    Transform: if the question is an image-generation request, run LLM for image prompt, yield
-    "Generating image...", close the stream, and run diffusion in a background thread (which
-    adds the assistant turn to memory when done). Otherwise return (prompt, assistant_memory)
-    unchanged so the caller continues to the main LLM.
+    Transform: if the question is an image-generation request (or force_image_generation is True),
+    run LLM for image prompt, yield "Generating image...", close the stream, and run diffusion in
+    a background thread (which adds the assistant turn to memory when done). Otherwise return
+    (prompt, assistant_memory) unchanged so the caller continues to the main LLM.
+    When force_image_generation is True, skip the persona.decisions.image_generation and
+    needs_image_generation checks.
     """
-    if not persona.decisions.get("image_generation", True):
-        return prompt, assistant_memory
-    if not needs_image_generation(question, decision_model=persona.decision_model):
-        return prompt, assistant_memory
+    if not force_image_generation:
+        if not persona.decisions.get("image_generation", True):
+            return prompt, assistant_memory
+        if not needs_image_generation(question, decision_model=persona.decision_model):
+            return prompt, assistant_memory
     memory_context = prompt.memory_entries.build_prompt(include_image_context=True, include_generated_image_prompt=True) if prompt.memory_entries else ""
-    prompt_request = _build_image_prompt_request(memory_context, question, persona.system_persona)
+    cfg = get_persona_config(persona.id) if persona.id else None
+    cfg = cfg or {}
+    image_gen_system = cfg.get("image_gen_system")
+    image_gen_model = cfg.get("image_gen_model") or persona.model
+    prompt_request = _build_image_prompt_request(memory_context, question, image_gen_system=image_gen_system)
     image_prompt_parts = []
     try:
-        for event in ask_ollama_stream(prompt_request, model=persona.model):
+        for event in ask_ollama_stream(prompt_request, model=image_gen_model):
             if "thinking" in event:
                 yield {"thinking": event["thinking"]}
             elif "token" in event:
@@ -346,18 +360,14 @@ def image_generation_stream(
     return prompt, assistant_memory
 
 
-def answer(question, extra_context=None, images=None, image_context=None, persona_id=None):
+def answer(question, extra_context=None, images=None, image_context=None, persona_id=None, force_image_generation=False):
     """
     Answer a question using memory, optional extra context, web search when needed, or image generation when requested.
-    extra_context: optional string (e.g. user preferences, session facts) included in the prompt.
-    images: optional list of base64-encoded image strings; each is summarized as text and stored in memory.
-    persona_id: optional persona id; uses that persona's config and memory. Defaults to first available persona.
-    Returns (response_text, sources) where sources is a list of strings (e.g. URLs) when web search was used.
-    Implemented by consuming answer_stream and returning the completed response.
+    force_image_generation: if True, run image generation for this turn (bypass decision/config checks).
     """
     parts = []
     sources = []
-    for event in answer_stream(question, extra_context=extra_context, images=images, image_context=image_context, persona_id=persona_id):
+    for event in answer_stream(question, extra_context=extra_context, images=images, image_context=image_context, persona_id=persona_id, force_image_generation=force_image_generation):
         if "token" in event:
             parts.append(event["token"])
         if event.get("done"):
@@ -366,10 +376,11 @@ def answer(question, extra_context=None, images=None, image_context=None, person
     return ("".join(parts).strip(), sources)
 
 
-def answer_stream(question, extra_context=None, images=None, image_context=None, persona_id=None):
+def answer_stream(question, extra_context=None, images=None, image_context=None, persona_id=None, force_image_generation=False):
     """
     Stream an answer: yields {"searching": True}, {"thinking": "..."}, {"token": "..."}, then {"done": True, "sources": [...], ...}.
     For image gen, yields thinking events then {"done": True, "final": ..., "image_result": ...}.
+    force_image_generation: if True, run image generation for this turn and bypass decision/config checks.
     """
     persona = persona_from_id(persona_id)
     memory_file = persona.memory_path
@@ -380,7 +391,7 @@ def answer_stream(question, extra_context=None, images=None, image_context=None,
     assistant_memory = MemoryEntry(timestamp="", role="assistant", persona_name=persona.name, content="", web_context=None, sources=[])
     prompt, assistant_memory = yield from web_search_stream(persona, question, prompt, assistant_memory)
 
-    gen = image_generation_stream(persona, question, prompt, assistant_memory, image_context, user_ts, memory_file)
+    gen = image_generation_stream(persona, question, prompt, assistant_memory, image_context, user_ts, memory_file, force_image_generation=force_image_generation)
     try:
         while True:
             event = next(gen)

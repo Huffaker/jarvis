@@ -217,6 +217,10 @@ body.options-hide-sources .message-sources {
     flex-wrap: wrap;
     min-width: 0;
 }
+#inputRow .generate-image-label {
+    white-space: nowrap;
+    user-select: none;
+}
 #attachments {
     display: flex;
     flex-wrap: wrap;

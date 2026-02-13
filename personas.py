@@ -3,7 +3,7 @@ Persona discovery and config loading.
 Each persona lives in .personas/<persona_id>/ with:
   - <persona_id>.config  (JSON: name, public, system_persona, decision_model, model, vl_model,
       optional decisions: { "image_generation": true, "web_search": true, "prior_image_context": true },
-      optional comfyui: models_dir, diffusion_model_name, clip_model_name, vae_model_name)
+      optional comfyui: ..., optional image_gen_system: system prompt for image prompt; optional image_gen_model: model for that step)
   - memory.json         (persona-specific conversation memory)
 
 .personas/ is created on first use (gitignored). Add persona configs there; see README for an example.

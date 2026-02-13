@@ -87,9 +87,11 @@ function setBusy(busy) {
     var input = document.getElementById("input");
     var btn = document.getElementById("sendBtn");
     var attachBtn = document.getElementById("attachBtn");
+    var genChk = document.getElementById("generateImageCheckbox");
     input.disabled = busy;
     btn.disabled = busy;
     attachBtn.disabled = busy;
+    if (genChk) genChk.disabled = busy;
 }
 
 function showThinking() {
@@ -156,12 +158,16 @@ async function send() {
     scrollMessagesToBottom();
 
     try {
+        var generateImageEl = document.getElementById("generateImageCheckbox");
+        var generateImage = generateImageEl && generateImageEl.checked;
         var payload = {
             message: text || "",
-            images: imagesForRequest.length ? imagesForRequest : undefined
+            images: imagesForRequest.length ? imagesForRequest : undefined,
+            generate_image: generateImage
         };
         var pid = currentPersonaId();
         if (pid) payload.persona_id = pid;
+        if (generateImageEl) generateImageEl.checked = false;
 
         const res = await fetch("/chat/stream", {
             method: "POST",

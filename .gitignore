@@ -30,6 +30,7 @@ htmlcov/
 # Generated images (saved when ComfyUI generates; folder created on first save)
 static/generated/*.png
 **/*.png
+**/*.json
 
 # OS
 .DS_Store
@@ -38,3 +39,5 @@ Thumbs.db
 # Model files
 **/*.gguf
 **/*.safetensors
+
+prompt-gen.py

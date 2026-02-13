@@ -34,7 +34,10 @@ Personas (setup)
   }
 
   Optional: "decisions" toggles LLM-based features (omit or set true/false). Optional: "comfyui"
-  for image generation model names. Conversation memory is stored in .personas/<persona_id>/memory.json
+  for image generation model names.   Optional: "image_gen_system" (string) overrides the default system prompt used to turn the user's
+  request into an image-generation prompt. Optional: "image_gen_model" (string) is the Ollama model
+  used for that step (defaults to the persona's main "model" if not set).
+  Conversation memory is stored in .personas/<persona_id>/memory.json
   and is created automatically when you use that persona.
 
 
